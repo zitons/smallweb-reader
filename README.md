@@ -90,11 +90,19 @@ Saved articles remain available even if they no longer appear in the daily list.
 
 ## Reading interface
 
-The hosted reader uses Material UI (MUI) through Preact compatibility, with a
-single-column reading list, desktop navigation, a compact mobile layout, and
-persisted light/dark themes. Icons ship as SVG; no external font CDN is needed.
-Only the hosted frontend changed; recommendation and feedback semantics remain
-the same.
+The hosted reader uses GitHub's Primer CSS with a compact monochrome layout,
+small corners and thin borders. It defaults to dark mode and remembers an explicit
+light/dark choice. Desktop navigation, title/source/excerpt filtering, history,
+read-state controls, expandable excerpts and explicit feedback remain available.
+Saving updates the library and its count immediately; clicking or saving never
+trains a positive interest signal. Only the light and dark color tokens are bundled.
+Icons ship as inline SVG, with no external font CDN.
+
+A browser regression script uses real public article content and intercepts
+feedback writes, so UI checks do not change the reader's actual preferences:
+`frontend/tests/reader-ui.mjs`. It covers login, save/reload/unsave, current verdicts,
+search, excerpts, read controls, expired-session recovery, theme persistence and
+four viewport widths.
 
 ## Learning from approved articles
 

@@ -20,6 +20,7 @@ else {
 }
 const articles = fixture.digest.items;
 const states = new Map(articles.map(a => [a.url, { url: a.url, verdict: null, saved: 0, is_read: 0 }]));
+let expireNextFeed = false;
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
@@ -27,6 +28,10 @@ try {
   page.on('pageerror', e => errors.push(e.message));
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path === '/api/feed' && expireNextFeed) {
+      expireNextFeed = false;
+      return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'Session expired' }) });
+    }
     let data;
     if (path === '/api/auth/login') data = auth;
     else if (path === '/api/feed') data = { ...fixture, digest: { ...fixture.digest, items: articles.map(a => ({ ...a, feedback: states.get(a.url) })) } };
@@ -50,7 +55,8 @@ try {
   await page.getByRole('heading', { name: '每日精选', exact: true }).waitFor();
   await page.locator('article').first().waitFor();
   assert.equal(await page.locator('article').count(), articles.length);
-  assert.ok(await page.locator('.MuiButton-root').count(), 'must render actual MUI components');
+  assert.ok(await page.locator('article').evaluateAll(rows => rows.filter(e => e.getBoundingClientRect().bottom <= innerHeight).length) >= 3, 'desktop should show several complete articles');
+  assert.ok(await page.locator('.reader-app .btn').count(), 'must render Primer buttons');
   const first = page.locator('article').first();
   await first.getByRole('button', { name: '收藏', exact: true }).click();
   await first.getByRole('button', { name: '已收藏', exact: true }).waitFor();
@@ -75,29 +81,43 @@ try {
   await page.getByLabel('隐藏已读').check();
   assert.equal(await page.locator('article').count(), articles.length);
   await page.getByLabel('隐藏已读').uncheck();
-  await page.getByRole('button', { name: '推荐说明', exact: true }).click();
-  await page.getByRole('alert').waitFor();
-  await page.getByRole('button', { name: '收起说明', exact: true }).click();
+  await page.locator('.profile-note summary').click();
+  await page.locator('.profile-note[open] p').waitFor();
+  await page.locator('.profile-note summary').click();
+  await page.getByLabel('筛选文章').fill('Rationalists');
+  assert.equal(await page.locator('article').count(), 1);
+  await page.getByLabel('筛选文章').fill('');
+  const excerpt = first.locator('.excerpt');
+  await first.getByRole('button', { name: '展开摘录', exact: true }).click();
+  assert.ok(await excerpt.evaluate(e => e.classList.contains('expanded')));
+  await first.getByRole('button', { name: '收起摘录', exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('article button:disabled'));
   await page.getByRole('combobox').selectOption('latest');
   await page.evaluate(() => window.scrollTo(0, 0));
   if (await page.getByRole('button', { name: '切换浅色', exact: true }).isVisible()) await page.getByRole('button', { name: '切换浅色', exact: true }).click();
   await page.evaluate(() => window.scrollTo(0, 0));
-  await page.screenshot({ path: '../data/cloud/mui-desktop-light.png', fullPage: true, animations: 'disabled' });
-  await page.screenshot({ path: '../data/cloud/mui-desktop-viewport.png' });
+  await page.screenshot({ path: '../data/cloud/primer-desktop-light.png', fullPage: true, animations: 'disabled' });
+  await page.screenshot({ path: '../data/cloud/primer-desktop-viewport.png' });
   await page.getByRole('button', { name: '切换深色', exact: true }).click();
-  await page.screenshot({ path: '../data/cloud/mui-desktop-dark.png', fullPage: true });
+  await page.screenshot({ path: '../data/cloud/primer-desktop-dark.png', fullPage: true });
   await page.reload();
   await page.getByRole('button', { name: '切换浅色', exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '切换浅色', exact: true }).click();
   await page.evaluate(() => window.scrollTo(0, 0));
-  await page.screenshot({ path: '../data/cloud/mui-mobile.png', fullPage: true, animations: 'disabled' });
-  await page.screenshot({ path: '../data/cloud/mui-mobile-viewport.png' });
+  await page.screenshot({ path: '../data/cloud/primer-mobile.png', fullPage: true, animations: 'disabled' });
+  await page.screenshot({ path: '../data/cloud/primer-mobile-viewport.png' });
   for (const width of [360, 390, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'layout overflow at ' + width);
   }
+  expireNextFeed = true;
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByLabel('阅读密码').waitFor();
+  assert.equal(await page.getByRole('button', { name: '进入阅读', exact: true }).isEnabled(), true);
+  await page.getByLabel('阅读密码').fill(process.env.READER_PASSWORD);
+  await page.getByRole('button', { name: '进入阅读', exact: true }).click();
+  await page.locator('article').first().waitFor();
   assert.deepEqual(errors, []);
-  console.log('MUI reader passed: real articles, login, save/reload/unsave, feedback/undo, read controls, theme persistence, four viewport sizes, zero JS errors. Feedback writes were mocked.');
+  console.log('Primer reader passed: real articles, login, save/reload/unsave, feedback/undo, read controls, theme persistence, four viewport sizes, zero JS errors. Feedback writes were mocked.');
 } finally { await browser.close(); }
