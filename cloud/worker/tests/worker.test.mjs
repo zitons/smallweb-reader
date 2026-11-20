@@ -44,8 +44,19 @@ test('reader authentication, publication, feedback and sync persist in real D1',
     assert.equal(snapshot.feedback[0].verdict, 'quality');
     assert.equal(snapshot.feedback[0].saved, 1);
     assert.equal(snapshot.feedback[0].is_read, 1);
+    assert.equal(snapshot.profile_articles.length, 0, 'quality feedback must not train the interest profile');
     assert.equal((await (await call('/api/library', { token })).json()).items.length, 1);
+    await feedback('useful');
+    await db.prepare('UPDATE articles SET updated_at=? WHERE url=?').bind('2020-01-01', article.url).run();
+    const filler = Array.from({ length: 301 }, (_, i) => db.prepare('INSERT INTO articles(url,item_json,content,published_at,updated_at) VALUES(?,?,?,?,?)').bind(
+      `https://new.test/${i}`, JSON.stringify({ ...article, url: `https://new.test/${i}` }), 'New content', '2026-11-20', '2099-01-01'));
+    for (let i = 0; i < filler.length; i += 40) await db.batch(filler.slice(i, i + 40));
+    const aged = await (await call('/internal/snapshot', { token: 'test-sync-secret' })).json();
+    assert.equal(aged.articles.some(a => a.url === article.url), false);
+    assert.equal(aged.profile_articles[0].url, article.url);
+    assert.equal(aged.profile_articles[0].content, article.content);
     await feedback('clear'); await feedback('unread');
+    assert.equal((await (await call('/internal/snapshot', { token: 'test-sync-secret' })).json()).profile_articles.length, 0, 'undo removes a profile sample');
     feed = await (await call(`/api/feed?digest=${originalId}`, { token })).json();
     assert.equal(feed.digest.items[0].feedback.verdict, null);
     assert.equal(feed.digest.items[0].feedback.is_read, 0);

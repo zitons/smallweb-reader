@@ -27,6 +27,10 @@ max_age_days: 30
 daily_limit: 10
 max_per_author: 2
 max_per_topic: 3
+# Explicit positive samples gradually replace topic descriptions as the profile.
+profile_full_weight_samples: 10
+profile_max_clusters: 10
+profile_per_author: 3
 # Initial heuristics; tune from actual reading feedback.
 min_similarity: 0.42
 duplicate_similarity: 0.90

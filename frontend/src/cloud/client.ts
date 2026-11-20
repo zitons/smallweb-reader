@@ -21,6 +21,12 @@ export interface Digest {
   embedding_model: string;
   candidate_count: number;
   topics: string[];
+  profile?: {
+    mode: 'cold_start' | 'learning' | 'personalized';
+    positive_samples: number;
+    clusters: number;
+    profile_weight: number;
+  };
   items: Article[];
 }
 export interface Feed {

@@ -156,7 +156,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (path === '/internal/snapshot' && request.method === 'GET') {
       const articles = await env.DB.prepare('SELECT * FROM articles ORDER BY updated_at DESC LIMIT 300').all<Json>();
       const states = await env.DB.prepare('SELECT * FROM feedback').all();
-      return json({ articles: articles.results.map(r => ({ ...JSON.parse(String(r.item_json)), content: r.content })), feedback: states.results });
+      const profile = await env.DB.prepare("SELECT a.* FROM articles a JOIN feedback f ON a.url=f.url WHERE f.verdict IN ('useful', 'topic') ORDER BY f.updated_at DESC, a.url LIMIT 300").all<Json>();
+      const unpack = (r: Json) => ({ ...JSON.parse(String(r.item_json)), content: r.content });
+      return json({ articles: articles.results.map(unpack), profile_articles: profile.results.map(unpack), feedback: states.results });
     }
     return json({ error: 'Not found.' }, 404);
   }

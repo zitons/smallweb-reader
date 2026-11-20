@@ -10,14 +10,17 @@ Built on the Preact reading UI and concepts from
 ## How it works
 
 1. Actions downloads Kagi Small Web RSS/Atom and merges recent candidates from D1.
-2. SiliconFlow `BAAI/bge-m3` embeds articles and six separate topic descriptions.
-3. Selection keeps topic coverage, limits each author, removes similar articles,
-   and reserves a small exploration slot. Feedback makes a limited adjustment.
+2. SiliconFlow `BAAI/bge-m3` embeds articles and eight initial topic descriptions.
+3. Explicitly approved articles form multiple interest centers using spherical
+   KMeans on API vectors (no local language model). Selection ranks against the
+   nearest center, limits authors, removes similar articles and reserves a small
+   exploration slot among eligible candidates.
 4. The daily list is published through an authenticated service endpoint.
 5. GitHub Pages fetches lists from the Worker after the reader logs in.
 
 The default interests are cognitive science, spaced repetition, school education,
-computer science, open source, and rational thinking. Edit `cloud/config.yaml`.
+computer science, open source, rational thinking, language learning and
+comprehensible input. Edit `cloud/config.yaml`.
 Similarity is relevance, not a quality guarantee; the initial thresholds are
 heuristics, not measured accuracy scores.
 
@@ -84,6 +87,33 @@ that day's digest rather than creating a duplicate.
 Changing a verdict replaces the previous one. The next daily run uses the current
 feedback. Clear feedback restores a neutral verdict; reading state is independent.
 Saved articles remain available even if they no longer appear in the daily list.
+
+## Learning from approved articles
+
+Only the current **有收获** verdict supplies a positive sample. Clicking, reading
+and saving never imply approval. Changing or undoing the verdict removes that
+sample on the next daily run. Topic dislikes retain a small ranking penalty;
+quality/known feedback hides an article without training a topic dislike.
+
+With no approved samples, initial topic descriptions provide exploratory results.
+For n effective approved articles, the profile weight is min(n / 10, 1);
+the remainder uses initial descriptions. Ten is an adjustable starting policy,
+not an accuracy guarantee. A source contributes at most three samples. Once ten
+effective samples exist, written topics no longer determine relevance.
+
+Spherical KMeans uses up to min(10, floor(sqrt(n))) centers, bounded by unique
+vectors. This adapts rssfilter's multiple-interest approach; it does not copy
+rssfilter's fixed ten clusters or implicit click signal. Recommendations identify
+a real approved article representing their closest interest group instead of
+asserting an unverified topic classification. Diversity follows interest groups
+once the profile has at least half the relevance weight.
+
+Approved and topic-disliked article text is retrieved independently of the recent
+candidate pool (up to 300 most recently rated articles). Old samples remain useful
+after the 30-day candidate limit. Only public article text vectors enter the
+Actions cache; verdicts and computed interest centers are not cached or published
+to Pages. The previous 0.42 relevance threshold remains unchanged. These changes
+have functional regression tests, not a measured recommendation accuracy score.
 
 ## Local development
 

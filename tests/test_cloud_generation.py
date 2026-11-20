@@ -48,7 +48,7 @@ def test_feedback_semantics_and_author_diversity():
     selected = cloud.select(config, articles, vectors, topics, feedback, "2026-11-20")
     assert articles[0]["url"] not in {a["url"] for a in selected}
     assert len({a["source"] for a in selected}) == len(selected)
-    assert all(a["category"] in ["Topic A", "Topic B"] for a in selected)
+    assert all(a["category"] == "兴趣探索" for a in selected)
     # Quality/known feedback must not become a broad topic dislike.
     feedback[0]["verdict"] = "quality"
     assert [a["url"] for a in selected] == [a["url"] for a in cloud.select(config, articles, vectors, topics, feedback, "2026-11-20")]
@@ -56,3 +56,98 @@ def test_feedback_semantics_and_author_diversity():
 
 def test_feed_excerpt_removes_markup_and_scripts():
     assert cloud.plain('<p>Hello &amp; world</p><script>bad()</script><p>Source</p>') == 'Hello & world Source'
+
+
+def test_explicit_samples_replace_descriptions_and_preserve_multiple_interests():
+    config = {"topics": [{"name": "Written topic"}], "min_similarity": .42,
+              "daily_limit": 10, "max_per_author": 2, "max_per_topic": 3,
+              "duplicate_similarity": .99, "exploration_slots": 1}
+    samples = [{"url": f"https://seed-{i}.test/post", "title": f"Approved {i}",
+                "source": f"seed-{i}.test", "published_at": "2020-01-01T00:00:00+00:00"}
+               for i in range(10)]
+    sample_vectors = np.array([[1., 0., 0.]] * 5 + [[0., 1., 0.]] * 5)
+    feedback = [{"url": a["url"], "verdict": "useful", "is_read": 1} for a in samples]
+    profile = cloud.build_profile(config, samples, sample_vectors, feedback)
+    assert profile["metadata"]["mode"] == "personalized"
+    assert profile["metadata"]["clusters"] == 2
+    np.testing.assert_allclose((sample_vectors @ profile["centers"].T).max(axis=1), 1)
+    candidates = [{"url": f"https://candidate-{i}.test/post", "title": title,
+                   "source": f"candidate-{i}.test", "summary": title,
+                   "published_at": datetime.now(UTC).isoformat()}
+                  for i, title in enumerate(["Language acquisition", "Programming", "Compounding investments"])]
+    vectors = np.array([[.9, 0, np.sqrt(.19)], [0, .9, np.sqrt(.19)], [0, 0, 1.]])
+    selected = cloud.select(config, candidates, vectors, np.array([[0., .6, .8]]), feedback, "test", profile=profile)
+    assert {a["title"] for a in selected} == {"Language acquisition", "Programming"}
+    assert all(a["recommendation_basis"] == "profile" and a["reference_url"] for a in selected)
+    assert all(a["category"] == "兴趣相近" for a in selected)
+    assert not any(a["title"] == "Compounding investments" for a in selected)
+
+
+def test_profile_uses_current_explicit_verdicts_and_caps_source_influence():
+    articles = [{"url": f"https://author.test/{i}", "source": "author.test", "title": str(i)} for i in range(8)]
+    vectors = np.tile([1., 0.], (8, 1))
+    feedback = [{"url": a["url"], "verdict": v, "is_read": 1, "saved": 1}
+                for a, v in zip(articles, [None, "known", "quality", "useful", "useful", "useful", "useful", "topic"])]
+    profile = cloud.build_profile({}, articles, vectors, feedback)
+    assert profile["metadata"]["positive_samples"] == 3
+    assert profile["metadata"]["profile_weight"] == .3
+    assert profile["metadata"]["mode"] == "learning"
+    feedback = [{"url": articles[3]["url"], "verdict": "useful"}, {"url": articles[3]["url"], "verdict": None}]
+    profile = cloud.build_profile({}, articles + articles, np.tile([1., 0.], (16, 1)), feedback)
+    assert profile["metadata"]["positive_samples"] == 0
+    assert profile["centers"] is None
+
+
+def test_cold_start_ranks_without_forcing_topic_coverage_or_claiming_labels():
+    config = {"topics": [{"name": "A"}, {"name": "Comprehensible input"}], "min_similarity": .42,
+              "daily_limit": 1, "max_per_author": 2, "max_per_topic": 3,
+              "duplicate_similarity": .99, "exploration_slots": 0}
+    articles = [{"url": f"https://blog-{i}.test/post", "source": f"blog-{i}.test", "title": str(i),
+                 "published_at": datetime.now(UTC).isoformat()} for i in range(2)]
+    selected = cloud.select(config, articles, np.array([[.424, .1], [.1, .9]]), np.eye(2), [], "test")
+    assert selected[0]["url"] == articles[1]["url"]
+    assert selected[0]["category"] == "兴趣探索"
+    assert "Comprehensible input" not in selected[0]["reason"]
+    assert selected[0]["reference_url"] is None
+
+
+def test_generation_keeps_old_approved_samples_separate_from_candidates(tmp_path, monkeypatch):
+    config = {"topics": [{"name": "Initial topic", "description": "description"}],
+              "embedding": {"base_url": "https://embedding.test", "model": "test"},
+              "max_age_days": 30, "pool_limit": 200, "timezone": "Asia/Shanghai",
+              "min_similarity": .42, "daily_limit": 10, "max_per_author": 2,
+              "max_per_topic": 3, "duplicate_similarity": .99, "profile_full_weight_samples": 1}
+    old = {"url": "https://old.test/post", "title": "Approved", "content": "Old source",
+           "source": "old.test", "published_at": "2020-01-01T00:00:00+00:00"}
+    fresh = {"url": "https://fresh.test/post", "title": "New", "content": "Fresh source",
+             "source": "fresh.test", "published_at": datetime.now(UTC).isoformat()}
+    published = []
+
+    def respond(request):
+        if request.url.path == "/internal/snapshot":
+            return httpx.Response(200, json={"articles": [fresh], "profile_articles": [old],
+                                            "feedback": [{"url": old["url"], "verdict": "useful"}]})
+        published.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True})
+
+    class Cache:
+        requests = 0
+        def __init__(self, *args): pass
+        def encode(self, texts, client):
+            assert texts == ["description", "Approved\nOld source", "New\nFresh source"]
+            return np.array([[0., 1.], [1., 0.], [.9, np.sqrt(.19)]])
+        def close(self): pass
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(cloud.httpx, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(cloud, "VectorCache", Cache)
+    monkeypatch.setattr(cloud, "collect", lambda config, client: [])
+    for key in ("READER_API_URL", "READER_SYNC_TOKEN", "SILICONFLOW_API_KEY"):
+        monkeypatch.setenv(key, "https://reader.test" if key == "READER_API_URL" else "test")
+    path = tmp_path / "config.yaml"
+    path.write_text(json.dumps(config))
+    digest = cloud.generate(path)
+    assert digest["candidate_count"] == 1
+    assert digest["items"][0]["reference_url"] == old["url"]
+    assert digest["profile"]["mode"] == "personalized"
+    assert [a["url"] for a in published[0]["articles"]] == [fresh["url"]]

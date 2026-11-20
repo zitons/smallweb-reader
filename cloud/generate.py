@@ -144,21 +144,72 @@ class VectorCache:
         self.db.close()
 
 
-def select(config: dict, articles: list[dict], vectors: np.ndarray, topics: np.ndarray, feedback: list[dict], run_key: str) -> list[dict]:
+def cluster_interests(vectors: np.ndarray, max_clusters: int = 10) -> tuple[np.ndarray, list[int]]:
+    """Deterministic spherical KMeans; returns unit centers and real exemplars.
+
+    Unlike averaging all likes together, separate centers preserve distinct interests.
+    This only operates on API embeddings, without loading a language model.
+    """
+    unique = np.unique(vectors, axis=0)
+    k = min(max_clusters, max(1, math.isqrt(len(vectors))), len(unique))
+    centers = [unique[0]]
+    for _ in range(1, k):
+        distance = 1 - (unique @ np.asarray(centers).T).max(axis=1)
+        centers.append(unique[int(np.argmax(distance))])
+    centers = np.asarray(centers)
+    for _ in range(50):
+        labels = np.argmax(vectors @ centers.T, axis=1)
+        updated = centers.copy()
+        for j in range(k):
+            members = vectors[labels == j]
+            if len(members):
+                mean = members.mean(axis=0)
+                norm = np.linalg.norm(mean)
+                if norm > 0:
+                    updated[j] = mean / norm
+        if np.allclose(centers, updated, atol=1e-6):
+            centers = updated
+            break
+        centers = updated
+    exemplars = [int(np.argmax(vectors @ center)) for center in centers]
+    return centers, exemplars
+
+
+def build_profile(config: dict, articles: list[dict], vectors: np.ndarray, feedback: list[dict]) -> dict:
+    states = {row["url"]: row for row in feedback}
+    liked, disliked, seen, per_author = [], [], set(), {}
+    # One current verdict per URL. Read/save/click are never positive signals.
+    for i, article in enumerate(articles):
+        url, source = article["url"], article["source"]
+        if url in seen or per_author.get(source, 0) >= config.get("profile_per_author", 3):
+            continue
+        seen.add(url)
+        verdict = states.get(url, {}).get("verdict")
+        if verdict in ("useful", "topic"):
+            (liked if verdict == "useful" else disliked).append(i)
+            per_author[source] = per_author.get(source, 0) + 1
+    weight = min(1.0, len(liked) / config.get("profile_full_weight_samples", 10))
+    centers, exemplars = cluster_interests(vectors[liked], config.get("profile_max_clusters", 10)) if liked else (None, [])
+    return {
+        "centers": centers,
+        "examples": [articles[liked[i]] for i in exemplars],
+        "negative_vectors": vectors[disliked],
+        "metadata": {
+            "algorithm": "explicit-positive-spherical-kmeans-v1",
+            "mode": "personalized" if weight == 1 else "learning" if liked else "cold_start",
+            "positive_samples": len(liked), "clusters": len(exemplars), "profile_weight": weight,
+        },
+    }
+
+
+def select(config: dict, articles: list[dict], vectors: np.ndarray, topics: np.ndarray, feedback: list[dict], run_key: str, *, profile: dict | None = None) -> list[dict]:
     states = {row["url"]: row for row in feedback}
     similarities = vectors @ topics.T
-    liked, disliked = [], []
-    per_author = {}
-    # Each article contributes once. Cap one author's influence on the profile.
-    for i, article in enumerate(articles):
-        state = states.get(article["url"], {})
-        source = article["source"]
-        if per_author.get(source, 0) >= 3:
-            continue
-        if state.get("verdict") == "useful":
-            liked.append(vectors[i]); per_author[source] = per_author.get(source, 0) + 1
-        elif state.get("verdict") == "topic":
-            disliked.append(vectors[i]); per_author[source] = per_author.get(source, 0) + 1
+    if profile is None:
+        profile = build_profile(config, articles, vectors, feedback)
+    weight = profile["metadata"]["profile_weight"]
+    centers = profile["centers"]
+    interest_similarities = vectors @ centers.T if centers is not None else None
     candidates = []
     now = datetime.now(UTC)
     for i, article in enumerate(articles):
@@ -166,31 +217,42 @@ def select(config: dict, articles: list[dict], vectors: np.ndarray, topics: np.n
         if state.get("is_read") or state.get("verdict"):
             continue
         topic = int(np.argmax(similarities[i]))
-        relevance = float(similarities[i, topic])
+        cluster = int(np.argmax(interest_similarities[i])) if interest_similarities is not None else None
+        personal = float(interest_similarities[i, cluster]) if cluster is not None else 0.0
+        relevance = (1 - weight) * float(similarities[i, topic]) + weight * personal
         if relevance < config["min_similarity"]:
             continue
-        positive = max((float(vectors[i] @ v) for v in liked), default=0)
-        negative = max((float(vectors[i] @ v) for v in disliked), default=0)
+        negative = max(0, max((float(vectors[i] @ v) for v in profile["negative_vectors"]), default=0))
         age = max(0, (now - utc_date(article["published_at"])).total_seconds() / 86400)
-        score = 0.85 * relevance + 0.10 * positive - 0.05 * negative + 0.05 * math.exp(-age / 14)
-        candidates.append((score, i, topic, positive))
+        score = 0.95 * relevance - 0.05 * negative + 0.05 * math.exp(-age / 14)
+        # Diversity follows learned interests once the profile dominates.
+        group = ("cluster", cluster) if weight >= .5 else ("topic", topic)
+        candidates.append((score, i, group, cluster))
     candidates.sort(key=lambda row: (-row[0], articles[row[1]]["url"]))
     chosen = []; authors = {}; topic_counts = {}; selected_indices = set()
+    group_limit = config["max_per_topic"] if weight < .5 else max(config["max_per_topic"], math.ceil(config["daily_limit"] / len(centers)))
 
     def add(row, exploration=False):
-        _, i, topic, positive = row
+        _, i, topic, cluster = row
         article = articles[i]
-        if i in selected_indices or authors.get(article["source"], 0) >= config["max_per_author"] or topic_counts.get(topic, 0) >= config["max_per_topic"]:
+        if i in selected_indices or authors.get(article["source"], 0) >= config["max_per_author"] or topic_counts.get(topic, 0) >= group_limit:
             return False
         if any(float(vectors[i] @ vectors[j]) >= config["duplicate_similarity"] for j in selected_indices):
             return False
-        category = config["topics"][topic]["name"]
-        reason = f"匹配你关注的「{category}」"
-        if liked and positive > 0.65:
-            reason += "，与你标记有收获的文章相近"
+        category = "兴趣相近" if weight else "兴趣探索"
+        if cluster is not None:
+            example = profile["examples"][cluster]
+            reason = f"接近你标记「有收获」的《{example['title']}》所在兴趣组"
+            if weight < 1:
+                reason += "；同时参考初始兴趣描述"
+        else:
+            example = None
+            reason = "根据初始兴趣描述探索，尚无你认可的文章样本；主题相关性待确认"
         if exploration:
             reason += "；保留一次探索机会"
-        chosen.append({**{k: v for k, v in article.items() if k != "content"}, "category": category, "reason": reason, "exploration": exploration})
+        chosen.append({**{k: v for k, v in article.items() if k != "content"}, "category": category, "reason": reason, "exploration": exploration,
+                       "recommendation_basis": "profile" if weight == 1 else "mixed" if weight else "topic_description",
+                       "reference_url": example["url"] if example else None})
         selected_indices.add(i)
         authors[article["source"]] = authors.get(article["source"], 0) + 1
         topic_counts[topic] = topic_counts.get(topic, 0) + 1
@@ -198,13 +260,7 @@ def select(config: dict, articles: list[dict], vectors: np.ndarray, topics: np.n
 
     limit = config["daily_limit"]
     main_limit = max(0, limit - config.get("exploration_slots", 1))
-    # Represent topics that actually have relevant candidates, without padding.
-    for topic in range(len(config["topics"])):
-        if len(chosen) >= main_limit:
-            break
-        for row in candidates:
-            if row[2] == topic and add(row):
-                break
+    # Rank globally; never force a result for each written topic.
     for row in candidates:
         if len(chosen) >= main_limit:
             break
@@ -235,17 +291,27 @@ def generate(config_path: Path, *, publish: bool = True) -> dict:
         articles = sorted((a for a in pool.values() if utc_date(a["published_at"]) >= cutoff), key=lambda a: a["published_at"], reverse=True)[:config["pool_limit"]]
         if not articles:
             raise RuntimeError("No recent articles available; keeping the previous digest")
-        texts = [t["description"] for t in config["topics"]] + [a["title"] + "\n" + a["content"][:5000] for a in articles]
+        # Profile samples survive the candidate age and pool limits. Never publish
+        # them back as fresh candidates or cache private verdicts with the vectors.
+        profile_pool = {a["url"]: a for a in snapshot.get("profile_articles", snapshot["articles"])}
+        profile_pool.update({a["url"]: a for a in articles})
+        profile_articles = list(profile_pool.values())
+        texts = [t["description"] for t in config["topics"]] + [a["title"] + "\n" + a["content"][:5000] for a in profile_articles]
         cache = VectorCache(Path(os.environ.get("READER_VECTOR_CACHE", "data/cloud/embeddings.sqlite")), config["embedding"]["base_url"], config["embedding"]["model"], embedding_key)
         try:
             vectors = cache.encode(texts, client)
             n = len(config["topics"])
+            article_vectors = vectors[n:]
+            index = {a["url"]: i for i, a in enumerate(profile_articles)}
+            candidate_vectors = article_vectors[[index[a["url"]] for a in articles]]
+            profile = build_profile(config, profile_articles, article_vectors, snapshot["feedback"])
             now = datetime.now(ZoneInfo(config["timezone"]))
             digest = {
                 "run_key": now.strftime("%Y-%m-%d"), "generated_at": now.isoformat(),
                 "embedding_model": config["embedding"]["model"], "candidate_count": len(articles),
                 "topics": [t["name"] for t in config["topics"]],
-                "items": select(config, articles, vectors[n:], vectors[:n], snapshot["feedback"], now.strftime("%Y-%m-%d")),
+                "profile": profile["metadata"],
+                "items": select(config, articles, candidate_vectors, vectors[:n], snapshot["feedback"], now.strftime("%Y-%m-%d"), profile=profile),
             }
             if publish:
                 response = client.post(api_url + "/internal/publish", headers=headers, json={"digest": digest, "articles": articles})

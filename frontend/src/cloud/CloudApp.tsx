@@ -84,6 +84,9 @@ export function CloudApp() {
         </div>
         {view === 'digest' && <div class="mb-6 space-y-4">
           <div class="flex flex-wrap gap-2">{feed?.digest?.topics?.map(topic => <span class="rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs text-teal-800 dark:border-teal-900 dark:bg-teal-950 dark:text-teal-300">{topic}</span>)}</div>
+          {feed?.digest?.profile && <p class="text-sm leading-6 text-slate-500">{feed.digest.profile.mode === 'cold_start'
+            ? '冷启动探索：尚无你标记“有收获”的文章。当前根据兴趣描述筛选，可能不相关；认可的文章会逐步建立你的兴趣。'
+            : `已采用 ${feed.digest.profile.positive_samples} 篇“有收获”文章，形成 ${feed.digest.profile.clusters} 个兴趣组。${feed.digest.profile.mode === 'learning' ? '样本积累中，仍参考初始兴趣描述。' : '当前以文章样本为推荐依据。'}`}</p>}
           <div class="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
             <span>{feed?.digest ? `${date(feed.digest.generated_at)} 更新 · 从 ${feed.digest.candidate_count} 篇候选中选出 ${items.length} 篇` : '等待第一份精选'}</span>
             <div class="flex gap-3 items-center"><label class="flex gap-2 items-center"><input type="checkbox" checked={hideRead} onChange={e => setHideRead(e.currentTarget.checked)} />隐藏已读</label>{Boolean(feed?.history.length) && <select aria-label="选择历史精选" class="rounded-lg border border-slate-200 bg-white px-2 py-2 dark:border-slate-700 dark:bg-slate-900" value={digestId} onChange={e => setDigestId(e.currentTarget.value)}><option value="latest">最新一期</option>{feed?.history.map(d => <option value={d.id}>{d.run_key}</option>)}</select>}</div>
