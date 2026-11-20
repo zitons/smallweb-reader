@@ -1,17 +1,27 @@
-import { useEffect, useState } from 'preact/hooks';
-import { ThemeToggle } from '../components/ThemeToggle';
+import { useEffect, useMemo, useState } from 'preact/hooks';
+import { Alert, Box, Button, Checkbox, Chip, CircularProgress, Collapse, CssBaseline, Divider, FormControlLabel, IconButton, Paper, Stack, TextField, ThemeProvider, Tooltip, Typography, createTheme } from '@mui/material';
+import AutoStoriesOutlined from '@mui/icons-material/AutoStoriesOutlined';
+import BookmarkBorderRounded from '@mui/icons-material/BookmarkBorderRounded';
+import BookmarkRounded from '@mui/icons-material/BookmarkRounded';
+import ArrowOutwardRounded from '@mui/icons-material/ArrowOutwardRounded';
+import CheckRounded from '@mui/icons-material/CheckRounded';
+import DarkModeOutlined from '@mui/icons-material/DarkModeOutlined';
+import LightModeOutlined from '@mui/icons-material/LightModeOutlined';
+import ThumbUpOutlined from '@mui/icons-material/ThumbUpOutlined';
+import RefreshRounded from '@mui/icons-material/RefreshRounded';
+import LogoutRounded from '@mui/icons-material/LogoutRounded';
+import { getInitialTheme, persistTheme } from '../lib/theme';
 import { clearSession, hasSession, login, request } from './client';
 import type { Article, Feed, Feedback } from './client';
-
-const button = 'rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40';
-const active = ' bg-teal-50 text-teal-700 dark:bg-teal-950 dark:text-teal-300';
+import './reader.css';
 
 function date(value: string) {
   const d = new Date(value);
-  return Number.isNaN(d.valueOf()) ? '' : d.toLocaleDateString('zh-CN');
+  return Number.isNaN(d.valueOf()) ? '' : d.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
 }
 
 export function CloudApp() {
+  const [mode, setMode] = useState(getInitialTheme());
   const [authenticated, setAuthenticated] = useState(hasSession());
   const [password, setPassword] = useState('');
   const [feed, setFeed] = useState<Feed | null>(null);
@@ -24,6 +34,21 @@ export function CloudApp() {
   const [less, setLess] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [hideRead, setHideRead] = useState(false);
+  const [about, setAbout] = useState(false);
+  const theme = useMemo(() => createTheme({
+    palette: { mode, primary: { main: mode === 'light' ? '#426449' : '#a8ceb0' },
+      background: { default: mode === 'light' ? '#fafbf8' : '#151815', paper: mode === 'light' ? '#ffffff' : '#1b1f1b' },
+      text: { primary: mode === 'light' ? '#242c25' : '#e1e8df', secondary: mode === 'light' ? '#69736a' : '#a0ada0' },
+      divider: mode === 'light' ? '#e2e7df' : '#30392f' },
+    shape: { borderRadius: 10 },
+    typography: { fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+      button: { textTransform: 'none', fontWeight: 500 }, body1: { lineHeight: 1.85 }, body2: { lineHeight: 1.7 } },
+    components: {
+      MuiButton: { defaultProps: { disableElevation: true }, styleOverrides: { root: { borderRadius: 8, minHeight: 40 } } },
+      MuiPaper: { defaultProps: { elevation: 0 }, styleOverrides: { root: { backgroundImage: 'none' } } },
+      MuiIconButton: { styleOverrides: { root: { borderRadius: 10 } } },
+    },
+  }), [mode]);
 
   useEffect(() => {
     document.title = 'Small Web · 每日精选';
@@ -59,60 +84,77 @@ export function CloudApp() {
 
   const items = view === 'saved' ? library : (feed?.digest?.items || []);
   const shown = hideRead && view === 'digest' ? items.filter(i => !i.feedback?.is_read) : items;
+  const profile = feed?.digest?.profile;
   const verdictLabel = { useful: '已标记有收获', topic: '已减少该话题', quality: '已记录质量问题', known: '已标记了解过' };
+  const navigation = <>
+    <Button className="reader-nav-button" variant={view === 'digest' ? 'contained' : 'text'} startIcon={<AutoStoriesOutlined />} onClick={() => setView('digest')}>精选</Button>
+    <Button className="reader-nav-button" variant={view === 'saved' ? 'contained' : 'text'} startIcon={<BookmarkBorderRounded />} onClick={() => setView('saved')}>收藏</Button>
+  </>;
+  const themeButton = <Tooltip title={mode === 'dark' ? '切换浅色' : '切换深色'}><IconButton aria-label={mode === 'dark' ? '切换浅色' : '切换深色'} onClick={() => { const next = mode === 'dark' ? 'light' : 'dark'; setMode(next); persistTheme(next); }}>{mode === 'dark' ? <LightModeOutlined /> : <DarkModeOutlined />}</IconButton></Tooltip>;
 
-  return <div class="min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-200">
-    <header class="sticky top-0 z-20 border-b border-slate-200 bg-white/95 dark:border-slate-800 dark:bg-slate-950/95">
-      <div class="mx-auto flex max-w-5xl items-center justify-between gap-4 px-5 py-4">
-        <a href={import.meta.env.BASE_URL} class="font-bold text-lg tracking-tight no-underline text-inherit">Small Web · 每日精选</a>
-        <div class="flex gap-2 items-center"><ThemeToggle />{authenticated && <button class={button} onClick={() => { clearSession(); setAuthenticated(false); setFeed(null); setLibrary([]); }}>退出</button>}</div>
-      </div>
-    </header>
-    <main class="mx-auto max-w-5xl px-5 py-8">
-      {!authenticated ? <section class="mx-auto mt-10 max-w-md rounded-2xl border border-slate-200 bg-white p-7 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <p class="text-sm text-teal-600 dark:text-teal-400">给好文章留一点时间</p>
-        <h1 class="text-2xl font-bold mt-2">你的独立博客阅读清单</h1>
-        <p class="text-sm leading-6 text-slate-500 mt-3">每天更新，按兴趣精选。登录后阅读、收藏并留下反馈。</p>
-        <form class="mt-6 space-y-3" onSubmit={async e => { e.preventDefault(); setLoading(true); setError(''); try { await login(password); setPassword(''); setAuthenticated(true); } catch (err) { setError(err instanceof Error ? err.message : '登录失败'); } finally { setLoading(false); } }}>
-          <label class="block text-sm">阅读密码<input type="password" autoComplete="current-password" required value={password} onInput={e => setPassword(e.currentTarget.value)} class="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-slate-950" /></label>
-          <button disabled={loading} class="w-full rounded-lg bg-teal-700 py-2.5 text-white disabled:opacity-50">{loading ? '登录中…' : '进入阅读'}</button>
-        </form>
-      </section> : <>
-        <div class="flex flex-wrap items-end justify-between gap-4 mb-5">
-          <div><p class="text-sm text-teal-700 dark:text-teal-400">{view === 'saved' ? '留给以后的自己' : '从小网络里，发现值得读的声音'}</p><h1 class="text-3xl font-bold mt-2">{view === 'saved' ? '我的收藏' : '每日精选'}</h1></div>
-          <div class="flex flex-wrap gap-2"><button class={button + (view === 'digest' ? active : '')} onClick={() => setView('digest')}>精选</button><button class={button + (view === 'saved' ? active : '')} onClick={() => setView('saved')}>收藏</button><button class={button} onClick={() => void load()} disabled={loading}>刷新</button></div>
-        </div>
-        {view === 'digest' && <div class="mb-6 space-y-4">
-          <div class="flex flex-wrap gap-2">{feed?.digest?.topics?.map(topic => <span class="rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs text-teal-800 dark:border-teal-900 dark:bg-teal-950 dark:text-teal-300">{topic}</span>)}</div>
-          {feed?.digest?.profile && <p class="text-sm leading-6 text-slate-500">{feed.digest.profile.mode === 'cold_start'
-            ? '冷启动探索：尚无你标记“有收获”的文章。当前根据兴趣描述筛选，可能不相关；认可的文章会逐步建立你的兴趣。'
-            : `已采用 ${feed.digest.profile.positive_samples} 篇“有收获”文章，形成 ${feed.digest.profile.clusters} 个兴趣组。${feed.digest.profile.mode === 'learning' ? '样本积累中，仍参考初始兴趣描述。' : '当前以文章样本为推荐依据。'}`}</p>}
-          <div class="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
-            <span>{feed?.digest ? `${date(feed.digest.generated_at)} 更新 · 从 ${feed.digest.candidate_count} 篇候选中选出 ${items.length} 篇` : '等待第一份精选'}</span>
-            <div class="flex gap-3 items-center"><label class="flex gap-2 items-center"><input type="checkbox" checked={hideRead} onChange={e => setHideRead(e.currentTarget.checked)} />隐藏已读</label>{Boolean(feed?.history.length) && <select aria-label="选择历史精选" class="rounded-lg border border-slate-200 bg-white px-2 py-2 dark:border-slate-700 dark:bg-slate-900" value={digestId} onChange={e => setDigestId(e.currentTarget.value)}><option value="latest">最新一期</option>{feed?.history.map(d => <option value={d.id}>{d.run_key}</option>)}</select>}</div>
-          </div>
-        </div>}
-        {loading && <p role="status" class="py-8 text-slate-500">正在加载…</p>}
-        {!loading && !shown.length && <div class="rounded-xl border border-dashed border-slate-300 p-10 text-center text-slate-500 dark:border-slate-700">{view === 'saved' ? '还没有收藏。读到想保留的文章时，点一下收藏。' : items.length ? '这一期已经读完了。取消“隐藏已读”可以重新查看。' : '还没有生成精选。第一轮每日任务完成后会显示在这里。'}</div>}
-        <div class="grid gap-5 md:grid-cols-2">{!loading && shown.map(article => <article key={article.url} class="flex flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <div class="flex justify-between gap-2 text-xs text-slate-500"><span>{article.category}{article.exploration ? ' · 探索' : ''}</span><span>{article.feedback?.is_read ? '已读' : date(article.published_at)}</span></div>
-          <h2 class="mt-3 text-xl font-semibold leading-7"><a href={article.url} target="_blank" rel="noopener noreferrer" class="text-inherit hover:text-teal-700 dark:hover:text-teal-400">{article.title}</a></h2>
-          <p class="mt-2 text-xs text-slate-500 break-all">{article.source}</p>
-          <p class="mt-4 text-sm leading-7 whitespace-pre-line">{expanded === article.url ? article.summary : article.summary.slice(0, 320)}{article.summary.length > 320 && expanded !== article.url ? '…' : ''}</p>
-          {article.summary.length > 320 && <button class="mt-2 self-start text-sm text-teal-700 dark:text-teal-400" onClick={() => setExpanded(expanded === article.url ? null : article.url)}>{expanded === article.url ? '收起摘录' : '展开原文摘录'}</button>}
-          {article.reason && <p class="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500 dark:bg-slate-950">{article.reason}</p>}
-          <div class="mt-auto pt-5 flex flex-wrap gap-2">
-            <button disabled={pending !== null} class={button + (article.feedback?.verdict === 'useful' ? active : '')} onClick={() => void act(article, article.feedback?.verdict === 'useful' ? 'clear' : 'useful')}>有收获</button>
-            <button disabled={pending !== null} class={button} onClick={() => setLess(less === article.url ? null : article.url)}>少推荐这类</button>
-            <button disabled={pending !== null} class={button + (article.feedback?.saved ? active : '')} onClick={() => void act(article, article.feedback?.saved ? 'unsave' : 'save')}>{article.feedback?.saved ? '已收藏' : '收藏'}</button>
-            <button disabled={pending !== null} class={button} onClick={() => void act(article, article.feedback?.is_read ? 'unread' : 'read')}>{article.feedback?.is_read ? '设为未读' : '标记已读'}</button>
-          </div>
-          {less === article.url && <div class="mt-3 flex flex-wrap gap-2 rounded-lg bg-slate-50 p-3 dark:bg-slate-950">{[['topic', '话题不感兴趣'], ['quality', '质量不佳'], ['known', '已经了解']].map(([action, label]) => <button class={button} disabled={pending !== null} onClick={() => void act(article, action)}>{label}</button>)}</div>}
-          {article.feedback?.verdict && <div class="mt-3 flex gap-3 text-xs text-slate-500"><span>{verdictLabel[article.feedback.verdict]}</span><button class="underline" disabled={pending !== null} onClick={() => void act(article, 'clear')}>撤销评价</button></div>}
-        </article>)}</div>
-        <p class="mt-8 text-xs leading-6 text-slate-500">展示原文摘录，不生成 AI 摘要。反馈影响后续精选，点击原文不会自动视为喜欢。</p>
-      </>}
-      {error && <div role="alert" class="mt-5 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">{error}</div>}
-    </main>
-  </div>;
+  return <ThemeProvider theme={theme}><CssBaseline />
+    <Box className="reader-app" sx={{ bgcolor: 'background.default', color: 'text.primary' }}>
+      <Box component="header" className="reader-mobile-header" sx={{ borderColor: 'divider' }}>
+        <a className="reader-brand" href={import.meta.env.BASE_URL}><AutoStoriesOutlined color="primary" />Small Web<span className="reader-brand-dot" /></a>
+        <Stack direction="row" spacing={.5}>{themeButton}{authenticated && <IconButton aria-label="退出" onClick={() => { clearSession(); setAuthenticated(false); }}><LogoutRounded fontSize="small" /></IconButton>}</Stack>
+      </Box>
+      {authenticated && <Box component="aside" className="reader-sidebar" sx={{ borderColor: 'divider' }}>
+        <a className="reader-brand" href={import.meta.env.BASE_URL}><AutoStoriesOutlined color="primary" />Small Web<span className="reader-brand-dot" /></a>
+        <Typography variant="caption" color="textSecondary" sx={{ mt: 1, mb: 5 }}>为好文章，留一点时间。</Typography>
+        <nav className="reader-navigation" aria-label="主导航">{navigation}</nav>
+        <Box sx={{ mt: 5 }}><Typography variant="overline" color="textSecondary">你的阅读方向</Typography><div className="reader-interest-list">{feed?.digest?.topics.map(topic => <Typography key={topic} variant="body2" color="textSecondary">{topic}</Typography>)}</div></Box>
+        <Stack direction="row" sx={{alignItems: 'center', justifyContent: 'space-between',  mt: 'auto', pt: 5 }}>{themeButton}<Button color="inherit" size="small" startIcon={<LogoutRounded fontSize="small" />} onClick={() => { clearSession(); setAuthenticated(false); setFeed(null); setLibrary([]); }}>退出</Button></Stack>
+      </Box>}
+      <main className={authenticated ? 'reader-main' : 'reader-login-main'}>
+        {!authenticated ? <Paper className="reader-login" sx={{ border: 1, borderColor: 'divider' }}>
+          <AutoStoriesOutlined color="primary" sx={{ fontSize: 36, mb: 4 }} />
+          <Typography variant="overline" color="textSecondary" sx={{ letterSpacing: 2 }}>A SMALLER, BETTER WEB</Typography>
+          <Typography component="h1" sx={{ fontSize: 32, fontWeight: 650, lineHeight: 1.4, mt: 1 }}>今天，读点好文章。</Typography>
+          <Typography color="textSecondary" sx={{ mt: 2, mb: 4 }}>来自独立博客的每日阅读清单。<br />按你的兴趣发现，留住值得反复读的内容。</Typography>
+          <form onSubmit={async e => { e.preventDefault(); setLoading(true); setError(''); try { await login(password); setPassword(''); setAuthenticated(true); } catch (err) { setError(err instanceof Error ? err.message : '登录失败'); } finally { setLoading(false); } }}>
+            <TextField label="阅读密码" type="password" autoComplete="current-password" required fullWidth value={password} onChange={e => setPassword((e.target as HTMLInputElement).value)} />
+            <Button type="submit" fullWidth variant="contained" disabled={loading} sx={{ mt: 2, py: 1.4 }}>{loading ? '登录中…' : '进入阅读'}</Button>
+          </form>
+        </Paper> : <>
+          <div className="reader-mobile-navigation">{navigation}</div>
+          <Box className="reader-page-heading">
+            <div><Typography variant="overline" color="textSecondary" sx={{ letterSpacing: 2 }}>{view === 'saved' ? 'YOUR READING SHELF' : 'YOUR DAILY READING'}</Typography><Typography component="h1" sx={{ fontSize: { xs: 30, md: 38 }, fontWeight: 650, letterSpacing: '-.04em', mt: .5 }}>{view === 'saved' ? '我的收藏' : '每日精选'}</Typography></div>
+            <Tooltip title="刷新文章"><IconButton aria-label="刷新" disabled={loading} onClick={() => void load()}><RefreshRounded /></IconButton></Tooltip>
+          </Box>
+          <Typography color="textSecondary" sx={{ mt: 1, mb: 4 }}>{view === 'saved' ? '那些想留着慢慢读的文章，都在这里。' : '从独立作者的思考里，发现值得停留的内容。'}</Typography>
+          {view === 'digest' && <>
+            <Paper className="reader-brief" sx={{ bgcolor: mode === 'light' ? '#edf3e9' : '#232e23' }}>
+              <div><Typography variant="overline" color="primary">{feed?.digest ? date(feed.digest.generated_at) + ' · 阅读清单' : '今日阅读'}</Typography><Typography sx={{ fontSize: 23, fontWeight: 600, mt: .5 }}>为你选了 {items.length} 篇文章</Typography><Typography variant="body2" color="textSecondary" sx={{ mt: .7 }}>{feed?.digest ? `从 ${feed.digest.candidate_count} 篇近期文章中发现，按兴趣为你整理。` : '第一份阅读清单正在路上。'}</Typography></div>
+              <Box className="reader-brief-mark" aria-hidden="true"><AutoStoriesOutlined sx={{ fontSize: 56 }} /></Box>
+            </Paper>
+            {profile && <Box className="reader-profile-note"><Typography variant="body2" color="textSecondary">{profile.mode === 'cold_start' ? '还在认识你的兴趣。读到喜欢的文章，点一下“有收获”。' : `已参考你认可的 ${profile.positive_samples} 篇文章，逐步认识你的兴趣。`}</Typography><Button size="small" onClick={() => setAbout(!about)} aria-expanded={about}>{about ? '收起说明' : '推荐说明'}</Button></Box>}
+            <Collapse in={about}><Alert severity="info" sx={{ mb: 3 }}>{profile?.mode === 'cold_start' ? '冷启动探索：尚无你标记“有收获”的文章，当前根据兴趣描述筛选，可能不相关。' : `已形成 ${profile?.clusters} 个兴趣组。${profile?.mode === 'learning' ? '样本积累中，仍参考初始兴趣描述。' : '当前以文章样本为推荐依据。'}`}评价会在下次每日更新时参与推荐，点击、已读和收藏不会自动视为喜欢。</Alert></Collapse>
+            <Box className="reader-filter-bar" sx={{ borderColor: 'divider' }}><Typography variant="body2" color="textSecondary">{shown.length} 篇可读</Typography><Stack direction="row" spacing={1} sx={{alignItems: 'center'}}><FormControlLabel sx={{ mr: 0 }} control={<Checkbox size="small" checked={hideRead} onChange={e => setHideRead((e.target as HTMLInputElement).checked)} />} label={<Typography variant="body2">隐藏已读</Typography>} />{Boolean(feed?.history.length) && <TextField select size="small" value={digestId} onChange={e => setDigestId((e.target as HTMLSelectElement).value)} slotProps={{ select: { native: true }, htmlInput: { 'aria-label': '选择历史精选' } }} sx={{ minWidth: 112, '& fieldset': { border: 0 }, '& select': { fontSize: 13 } }}><option value="latest">最新一期</option>{feed?.history.map(d => <option key={d.id} value={d.id}>{d.run_key}</option>)}</TextField>}</Stack></Box>
+          </>}
+          {loading && <Box role="status" sx={{ py: 8, textAlign: 'center' }}><CircularProgress size={26} /><Typography color="textSecondary" sx={{ mt: 2 }}>正在加载…</Typography></Box>}
+          {!loading && !shown.length && <Box sx={{ py: 10, textAlign: 'center' }}><BookmarkBorderRounded sx={{ fontSize: 40, color: 'text.secondary', mb: 2 }} /><Typography color="textSecondary">{view === 'saved' ? '还没有收藏。读到想保留的文章时，点一下收藏。' : items.length ? '这一期已经读完了。取消“隐藏已读”可以重新查看。' : '还没有生成精选。第一轮每日任务完成后会显示在这里。'}</Typography></Box>}
+          {!loading && shown.map((article, i) => <Box component="article" key={article.url} className="reader-article" sx={{ borderColor: 'divider' }}>
+            <Typography className="reader-article-number" aria-hidden="true" sx={{ color: 'text.disabled' }}>{String(i + 1).padStart(2, '0')}</Typography>
+            <div className="reader-article-content">
+              <Stack direction="row" sx={{alignItems: 'center', flexWrap: 'wrap', gap: 1,  mb: 1.5 }}><Typography variant="caption" color="textSecondary" sx={{ overflowWrap: 'anywhere' }}>{article.source}</Typography><span className="reader-meta-dot">·</span><Typography variant="caption" color="textSecondary">{date(article.published_at)}</Typography>{article.exploration && <Chip size="small" label="探索" sx={{ height: 20, fontSize: 10 }} />}{Boolean(article.feedback?.is_read) && <Chip size="small" label="已读" variant="outlined" sx={{ height: 20, fontSize: 10 }} />}</Stack>
+              <Typography component="h2" className="reader-article-title" sx={{ fontSize: { xs: 21, md: 25 }, fontWeight: 600, lineHeight: 1.4 }}><a href={article.url} target="_blank" rel="noopener noreferrer">{article.title}<ArrowOutwardRounded className="reader-open-icon" /></a></Typography>
+              <Typography className="reader-excerpt" color="textSecondary" sx={{ mt: 1.7, fontSize: 15, lineHeight: 1.85 }}>{expanded === article.url ? article.summary : article.summary.slice(0, 320)}{article.summary.length > 320 && expanded !== article.url ? '…' : ''}</Typography>
+              {article.summary.length > 320 && <Button size="small" sx={{ px: 0, minWidth: 0, mt: .5 }} onClick={() => setExpanded(expanded === article.url ? null : article.url)}>{expanded === article.url ? '收起摘录' : '展开原文摘录'}</Button>}
+              {article.reason && profile?.mode !== 'cold_start' && <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 1.5 }}>{article.reason}</Typography>}
+              <Stack className="reader-article-actions" direction="row" sx={{flexWrap: 'wrap', gap: .5,  mt: 2 }}>
+                <Button size="small" variant={article.feedback?.verdict === 'useful' ? 'contained' : 'text'} color={article.feedback?.verdict === 'useful' ? 'primary' : 'inherit'} startIcon={<ThumbUpOutlined sx={{ fontSize: '16px !important' }} />} disabled={pending !== null} onClick={() => void act(article, article.feedback?.verdict === 'useful' ? 'clear' : 'useful')}>有收获</Button>
+                <Button size="small" color="inherit" startIcon={article.feedback?.saved ? <BookmarkRounded sx={{ fontSize: '17px !important' }} /> : <BookmarkBorderRounded sx={{ fontSize: '17px !important' }} />} disabled={pending !== null} onClick={() => void act(article, article.feedback?.saved ? 'unsave' : 'save')}>{article.feedback?.saved ? '已收藏' : '收藏'}</Button>
+                <Button size="small" color="inherit" startIcon={<CheckRounded sx={{ fontSize: '17px !important' }} />} disabled={pending !== null} onClick={() => void act(article, article.feedback?.is_read ? 'unread' : 'read')}>{article.feedback?.is_read ? '设为未读' : '标记已读'}</Button>
+                <Button size="small" color="inherit" disabled={pending !== null} aria-expanded={less === article.url} onClick={() => setLess(less === article.url ? null : article.url)}>少推荐这类</Button>
+              </Stack>
+              <Collapse in={less === article.url}><Paper sx={{ bgcolor: 'action.hover', p: 1.5, mt: 1 }}><Typography variant="caption" color="textSecondary">哪一点不合适？</Typography><Stack direction="row" sx={{flexWrap: 'wrap', gap: .5,  mt: .5 }}>{[['topic', '话题不感兴趣'], ['quality', '质量不佳'], ['known', '已经了解']].map(([action, label]) => <Button key={action} size="small" disabled={pending !== null} onClick={() => void act(article, action)}>{label}</Button>)}</Stack></Paper></Collapse>
+              {article.feedback?.verdict && <Stack direction="row" sx={{alignItems: 'center', gap: 1,  mt: 1 }}><Typography variant="caption" color="textSecondary">{verdictLabel[article.feedback.verdict]}</Typography><Button size="small" disabled={pending !== null} onClick={() => void act(article, 'clear')}>撤销评价</Button></Stack>}
+            </div>
+          </Box>)}
+          <Divider sx={{ mt: 2 }} /><Typography component="footer" variant="caption" color="textSecondary" sx={{ display: 'block', py: 4 }}>SMALL WEB · 原文摘录，独立思考。每天更新，慢慢读。</Typography>
+        </>}
+        {error && <Alert severity="error" sx={{ my: 3 }} onClose={() => setError('')}>{error}</Alert>}
+      </main>
+    </Box>
+  </ThemeProvider>;
 }

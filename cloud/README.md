@@ -88,6 +88,14 @@ Changing a verdict replaces the previous one. The next daily run uses the curren
 feedback. Clear feedback restores a neutral verdict; reading state is independent.
 Saved articles remain available even if they no longer appear in the daily list.
 
+## Reading interface
+
+The hosted reader uses Material UI (MUI) through Preact compatibility, with a
+single-column reading list, desktop navigation, a compact mobile layout, and
+persisted light/dark themes. Icons ship as SVG; no external font CDN is needed.
+Only the hosted frontend changed; recommendation and feedback semantics remain
+the same.
+
 ## Learning from approved articles
 
 Only the current **有收获** verdict supplies a positive sample. Clicking, reading
