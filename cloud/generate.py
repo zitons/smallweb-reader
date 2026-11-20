@@ -276,6 +276,7 @@ def select(config: dict, articles: list[dict], vectors: np.ndarray, topics: np.n
 
 def generate(config_path: Path, *, publish: bool = True) -> dict:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.setdefault("topics", json.loads(Path(__file__).with_name("preferences.json").read_text(encoding="utf-8"))["topics"])
     api_url = os.environ["READER_API_URL"].rstrip("/")
     sync_token = os.environ["READER_SYNC_TOKEN"]
     embedding_key = os.environ["SILICONFLOW_API_KEY"]
@@ -284,6 +285,8 @@ def generate(config_path: Path, *, publish: bool = True) -> dict:
         response = client.get(api_url + "/internal/snapshot", headers=headers)
         response.raise_for_status()
         snapshot = response.json()
+        if snapshot.get("settings"):
+            config["topics"] = snapshot["settings"]["topics"]
         fresh = collect(config, client)
         pool = {a["url"]: a for a in snapshot["articles"]}
         pool.update({a["url"]: a for a in fresh})

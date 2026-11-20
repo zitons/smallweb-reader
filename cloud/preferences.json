@@ -1,0 +1,39 @@
+{
+  "theme": "dark",
+  "density": "compact",
+  "hide_read": false,
+  "topics": [
+    {
+      "name": "\u8ba4\u77e5\u79d1\u5b66",
+      "description": "Cognitive science, cognitive psychology, memory, attention, reasoning, metacognition, experimental research on how people learn and think."
+    },
+    {
+      "name": "\u95f4\u9694\u91cd\u590d",
+      "description": "Spaced repetition, retrieval practice, active recall, long-term memory, Anki, FSRS, forgetting curves, practical evidence-based learning methods."
+    },
+    {
+      "name": "\u5b66\u6821\u6559\u80b2",
+      "description": "School education, classroom teaching, pedagogy, curriculum, assessment, learning science, teachers' experiences and evidence-based educational practice."
+    },
+    {
+      "name": "\u8ba1\u7b97\u673a",
+      "description": "Computer science, programming, algorithms, operating systems, databases, distributed systems, software engineering, detailed technical explanations and experience."
+    },
+    {
+      "name": "\u5f00\u6e90",
+      "description": "Open-source software, free software, FOSS, maintainership, contributing to projects, open development, software freedom and independent software tools."
+    },
+    {
+      "name": "\u7406\u6027\u601d\u8003",
+      "description": "Rational thinking, epistemology, Bayesian reasoning, critical thinking, cognitive biases, uncertainty, decision making, careful arguments and evidence."
+    },
+    {
+      "name": "\u8bed\u8a00\u5b66\u4e60",
+      "description": "Language learning, second language acquisition, multilingualism, vocabulary acquisition, listening and reading comprehension, extensive reading, and evidence-based experiences learning foreign languages."
+    },
+    {
+      "name": "\u53ef\u7406\u89e3\u6027\u8f93\u5165",
+      "description": "Comprehensible input in second language acquisition, Stephen Krashen, input hypothesis, acquiring languages through meaningful understandable listening and reading, graded readers, extensive listening, and practical input-based language learning."
+    }
+  ]
+}

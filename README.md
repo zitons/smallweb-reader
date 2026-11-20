@@ -20,7 +20,8 @@ Built on the Preact reading UI and concepts from
 
 The default interests are cognitive science, spaced repetition, school education,
 computer science, open source, rational thinking, language learning and
-comprehensible input. Edit `cloud/config.yaml`.
+comprehensible input. Use **Settings > Interests** in the reader;
+initial defaults are in `cloud/preferences.json`.
 Similarity is relevance, not a quality guarantee; the initial thresholds are
 heuristics, not measured accuracy scores.
 
@@ -103,6 +104,26 @@ feedback writes, so UI checks do not change the reader's actual preferences:
 `frontend/tests/reader-ui.mjs`. It covers login, save/reload/unsave, current verdicts,
 search, excerpts, read controls, expired-session recovery, theme persistence and
 four viewport widths.
+
+## Reader settings
+
+The gear button opens Settings on desktop and mobile. Theme, compact/comfortable
+density and default read filtering are saved in D1 and loaded after login on each
+device. The header theme button saves just the theme, preserving other settings.
+The saved hide-read preference is the startup default; the list checkbox can
+temporarily change the current view.
+
+Interest names and descriptions can be added, edited or deleted (1?20 interests).
+Saving changes future daily runs, not the already published list. Descriptions
+guide cold-start/mixed retrieval; the explicit-positive article profile still
+takes over once enough effective samples exist. No embedding call is made while
+editing settings. Cloudflare exposes authenticated GET/POST /api/settings and the
+service snapshot carries saved interests to the generator. Display settings do
+not enter the vector cache or static Pages output.
+
+Apply all Worker migrations, including 0002_settings.sql, before deploying the
+settings-enabled Worker. Unsaved edits are kept in the form until saved or
+explicitly discarded. Failed validation leaves the stored preferences unchanged.
 
 ## Learning from approved articles
 

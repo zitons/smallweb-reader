@@ -1,3 +1,5 @@
+import defaults from '../../preferences.json';
+
 interface Env {
   DB: D1Database;
   AUTH_PASSWORD: string;
@@ -146,6 +148,39 @@ async function publish(request: Request, env: Env): Promise<Response> {
   return json({ ok: true, articles: articles.length, items: digest.items.length });
 }
 
+async function readSettings(env: Env) {
+  const row = await env.DB.prepare('SELECT settings_json, updated_at FROM reader_settings WHERE id=1').first<{ settings_json: string; updated_at: string }>();
+  return { settings: row ? JSON.parse(row.settings_json) as typeof defaults : defaults, configured: Boolean(row), updated_at: row?.updated_at || null };
+}
+
+async function saveSettings(request: Request, env: Env): Promise<Response> {
+  const patch = await body(request);
+  const allowed = new Set(['theme', 'density', 'hide_read', 'topics']);
+  if (!Object.keys(patch).length || Object.keys(patch).some(k => !allowed.has(k))) return json({ error: 'Unsupported setting.' }, 422);
+  if (patch.theme !== undefined && (typeof patch.theme !== 'string' || !['light', 'dark'].includes(patch.theme))) return json({ error: 'Invalid theme.' }, 422);
+  if (patch.density !== undefined && (typeof patch.density !== 'string' || !['compact', 'comfortable'].includes(patch.density))) return json({ error: 'Invalid density.' }, 422);
+  if (patch.hide_read !== undefined && typeof patch.hide_read !== 'boolean') return json({ error: 'Invalid read preference.' }, 422);
+  if (patch.topics !== undefined) {
+    if (!Array.isArray(patch.topics) || patch.topics.length < 1 || patch.topics.length > 20) return json({ error: 'Choose 1 to 20 interests.' }, 422);
+    const names = new Set<string>();
+    const topics = [];
+    for (const value of patch.topics) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return json({ error: 'Invalid interest.' }, 422);
+      const topic = value as Json;
+      if (typeof topic.name !== 'string' || typeof topic.description !== 'string') return json({ error: 'Interest name and description are required.' }, 422);
+      const name = topic.name.trim(), description = topic.description.trim();
+      if (!name || name.length > 40 || description.length < 10 || description.length > 2000 || names.has(name.toLowerCase())) return json({ error: 'Interests need unique names (1–40 characters) and descriptions (10–2000 characters).' }, 422);
+      names.add(name.toLowerCase()); topics.push({ name, description });
+    }
+    patch.topics = topics;
+  }
+  // JSON merge runs in SQLite so concurrent partial updates preserve other keys.
+  const initial = JSON.stringify({ ...defaults, ...patch });
+  await env.DB.prepare('INSERT INTO reader_settings(id,settings_json,updated_at) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET settings_json=json_patch(reader_settings.settings_json,?), updated_at=excluded.updated_at')
+    .bind(initial, new Date().toISOString(), JSON.stringify(patch)).run();
+  return json(await readSettings(env));
+}
+
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url), path = url.pathname;
   if (path === '/health' && request.method === 'GET') return json({ status: 'ok' });
@@ -158,12 +193,15 @@ async function route(request: Request, env: Env): Promise<Response> {
       const states = await env.DB.prepare('SELECT * FROM feedback').all();
       const profile = await env.DB.prepare("SELECT a.* FROM articles a JOIN feedback f ON a.url=f.url WHERE f.verdict IN ('useful', 'topic') ORDER BY f.updated_at DESC, a.url LIMIT 300").all<Json>();
       const unpack = (r: Json) => ({ ...JSON.parse(String(r.item_json)), content: r.content });
-      return json({ articles: articles.results.map(unpack), profile_articles: profile.results.map(unpack), feedback: states.results });
+      const preferences = await readSettings(env);
+      return json({ articles: articles.results.map(unpack), profile_articles: profile.results.map(unpack), feedback: states.results, settings: preferences.configured ? preferences.settings : null });
     }
     return json({ error: 'Not found.' }, 404);
   }
   if (!await authorized(request, env)) return json({ error: 'Please log in.' }, 401);
   if (path === '/api/auth/check' && request.method === 'GET') return json({ authenticated: true });
+  if (path === '/api/settings' && request.method === 'GET') return json(await readSettings(env));
+  if (path === '/api/settings' && request.method === 'POST') return saveSettings(request, env);
   if (path === '/api/feed' && request.method === 'GET') return feed(url, env);
   if (path === '/api/feedback' && request.method === 'POST') return feedback(request, env);
   if (path === '/api/library' && request.method === 'GET') {

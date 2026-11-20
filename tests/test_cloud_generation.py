@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import numpy as np
+import pytest
 
 spec = importlib.util.spec_from_file_location("cloud_generate", Path(__file__).parents[1] / "cloud/generate.py")
 cloud = importlib.util.module_from_spec(spec)
@@ -111,7 +112,8 @@ def test_cold_start_ranks_without_forcing_topic_coverage_or_claiming_labels():
     assert selected[0]["reference_url"] is None
 
 
-def test_generation_keeps_old_approved_samples_separate_from_candidates(tmp_path, monkeypatch):
+@pytest.mark.parametrize('saved_topics', [None, [{'name': 'Saved interest', 'description': 'Interest description saved through the reader settings.'}]])
+def test_generation_keeps_old_approved_samples_separate_from_candidates(tmp_path, monkeypatch, saved_topics):
     config = {"topics": [{"name": "Initial topic", "description": "description"}],
               "embedding": {"base_url": "https://embedding.test", "model": "test"},
               "max_age_days": 30, "pool_limit": 200, "timezone": "Asia/Shanghai",
@@ -125,7 +127,7 @@ def test_generation_keeps_old_approved_samples_separate_from_candidates(tmp_path
 
     def respond(request):
         if request.url.path == "/internal/snapshot":
-            return httpx.Response(200, json={"articles": [fresh], "profile_articles": [old],
+            return httpx.Response(200, json={"articles": [fresh], "profile_articles": [old], "settings": {"topics": saved_topics} if saved_topics else None,
                                             "feedback": [{"url": old["url"], "verdict": "useful"}]})
         published.append(json.loads(request.content))
         return httpx.Response(200, json={"ok": True})
@@ -134,7 +136,7 @@ def test_generation_keeps_old_approved_samples_separate_from_candidates(tmp_path
         requests = 0
         def __init__(self, *args): pass
         def encode(self, texts, client):
-            assert texts == ["description", "Approved\nOld source", "New\nFresh source"]
+            assert texts == [saved_topics[0]['description'] if saved_topics else "description", "Approved\nOld source", "New\nFresh source"]
             return np.array([[0., 1.], [1., 0.], [.9, np.sqrt(.19)]])
         def close(self): pass
 
@@ -150,4 +152,5 @@ def test_generation_keeps_old_approved_samples_separate_from_candidates(tmp_path
     assert digest["candidate_count"] == 1
     assert digest["items"][0]["reference_url"] == old["url"]
     assert digest["profile"]["mode"] == "personalized"
+    assert digest["topics"] == [saved_topics[0]['name'] if saved_topics else 'Initial topic']
     assert [a["url"] for a in published[0]["articles"]] == [fresh["url"]]

@@ -2,7 +2,7 @@ name: Publish reader to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ['frontend/**', '.github/workflows/cloud-pages.yml']
+    paths: ['frontend/**', 'cloud/preferences.json', '.github/workflows/cloud-pages.yml']
   workflow_dispatch:
 permissions:
   contents: read

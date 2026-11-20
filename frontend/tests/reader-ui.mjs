@@ -21,6 +21,8 @@ else {
 const articles = fixture.digest.items;
 const states = new Map(articles.map(a => [a.url, { url: a.url, verdict: null, saved: 0, is_read: 0 }]));
 let expireNextFeed = false;
+let settings = JSON.parse(await readFile(new URL('../../cloud/preferences.json', import.meta.url), 'utf8'));
+let settingsConfigured = false;
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
@@ -34,6 +36,10 @@ try {
     }
     let data;
     if (path === '/api/auth/login') data = auth;
+    else if (path === '/api/settings') {
+      if (route.request().method() === 'POST') { settings = { ...settings, ...route.request().postDataJSON() }; settingsConfigured = true; }
+      data = { settings, configured: settingsConfigured, updated_at: settingsConfigured ? new Date().toISOString() : null };
+    }
     else if (path === '/api/feed') data = { ...fixture, digest: { ...fixture.digest, items: articles.map(a => ({ ...a, feedback: states.get(a.url) })) } };
     else if (path === '/api/library') data = { items: articles.filter(a => states.get(a.url).saved).map(a => ({ ...a, feedback: states.get(a.url) })) };
     else if (path === '/api/feedback') {
@@ -91,6 +97,29 @@ try {
   await first.getByRole('button', { name: '展开摘录', exact: true }).click();
   assert.ok(await excerpt.evaluate(e => e.classList.contains('expanded')));
   await first.getByRole('button', { name: '收起摘录', exact: true }).click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('heading', { name: '设置', exact: true }).waitFor();
+  await page.getByLabel('阅读密度', { exact: true }).selectOption('comfortable');
+  await page.getByLabel('默认隐藏已读', { exact: true }).check();
+  await page.getByRole('textbox', { name: '兴趣 1 名称', exact: true }).fill('语言学习（设置测试）');
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await page.getByText('已保存。阅读设置已生效，兴趣偏好将在下次每日更新时使用。', { exact: true }).waitFor();
+  await page.reload();
+  await page.locator('.reader-app.density-comfortable').waitFor();
+  assert.equal(await page.getByLabel('隐藏已读', { exact: true }).isChecked(), true);
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  assert.equal(await page.getByLabel('阅读密度', { exact: true }).inputValue(), 'comfortable');
+  assert.equal(await page.getByRole('textbox', { name: '兴趣 1 名称', exact: true }).inputValue(), '语言学习（设置测试）');
+  await page.screenshot({ path: '../data/cloud/settings-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 900 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.screenshot({ path: '../data/cloud/settings-mobile.png' });
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  await page.getByLabel('阅读密度', { exact: true }).selectOption('compact');
+  await page.getByLabel('默认隐藏已读', { exact: true }).uncheck();
+  await page.getByRole('button', { name: '保存设置', exact: true }).click();
+  await page.getByText('已保存。阅读设置已生效，兴趣偏好将在下次每日更新时使用。', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '返回阅读', exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('article button:disabled'));
   await page.getByRole('combobox').selectOption('latest');
   await page.evaluate(() => window.scrollTo(0, 0));

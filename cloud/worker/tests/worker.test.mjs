@@ -13,14 +13,18 @@ test('reader authentication, publication, feedback and sync persist in real D1',
   });
   try {
     const db = await mf.getD1Database('DB');
-    const sql = await readFile('migrations/0001_reader.sql', 'utf8');
-    for (const statement of sql.split(';').map(s => s.trim()).filter(Boolean)) await db.prepare(statement).run();
+    for (const migration of ['0001_reader.sql', '0002_settings.sql']) {
+      const sql = await readFile('migrations/' + migration, 'utf8');
+      for (const statement of sql.split(';').map(s => s.trim()).filter(Boolean)) await db.prepare(statement).run();
+    }
     const call = (path, { token, origin, body, method } = {}) => mf.dispatchFetch('https://reader.test' + path, {
       method: method || (body ? 'POST' : 'GET'),
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(origin ? { Origin: origin } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     assert.equal((await call('/api/feed')).status, 401);
+    assert.equal((await call('/api/settings')).status, 401);
+    assert.equal((await call('/api/settings', { body: { theme: 'light' } })).status, 401);
     assert.equal((await call('/api/auth/login', { origin: 'https://evil.test', body: { password: 'test-password' } })).status, 403);
     assert.equal((await call('/api/auth/login', { body: { password: 'wrong' } })).status, 401);
     const auth = await call('/api/auth/login', { origin: 'https://example.github.io', body: { password: 'test-password' } });
@@ -28,6 +32,25 @@ test('reader authentication, publication, feedback and sync persist in real D1',
     const { token } = await auth.json();
     assert.equal((await call('/internal/snapshot', { token })).status, 401);
     assert.equal((await call('/api/feed', { token: 'test-sync-secret' })).status, 401);
+    assert.equal((await call('/api/settings', { token: 'test-sync-secret' })).status, 401);
+    const defaults = await (await call('/api/settings', { token })).json();
+    assert.equal(defaults.configured, false);
+    assert.equal(defaults.settings.theme, 'dark');
+    assert.equal(defaults.settings.topics.length, 8);
+    const topics = [{ name: ' Language learning ', description: ' Comprehensible input and second language acquisition. ' }];
+    assert.equal((await call('/api/settings', { token, body: { density: 'comfortable', hide_read: true, topics } })).status, 200);
+    assert.equal((await call('/api/settings', { token, body: { theme: 'light' } })).status, 200);
+    const settings = await (await call('/api/settings', { token })).json();
+    assert.equal(settings.configured, true);
+    assert.equal(settings.settings.density, 'comfortable', 'partial theme update must preserve other settings');
+    assert.equal(settings.settings.hide_read, true);
+    assert.equal(settings.settings.topics[0].name, 'Language learning');
+    const synced = await (await call('/internal/snapshot', { token: 'test-sync-secret' })).json();
+    assert.deepEqual(synced.settings.topics, settings.settings.topics);
+    for (const invalid of [{ topics: [] }, { topics: [topics[0], topics[0]] }, { topics: [{ name: 'A', description: 'short' }] }, { theme: ['dark'] }, { hide_read: 'false' }, { density: 'huge' }, { api_key: 'unsupported' }]) {
+      assert.equal((await call('/api/settings', { token, body: invalid })).status, 422);
+    }
+    assert.deepEqual((await (await call('/api/settings', { token })).json()).settings, settings.settings, 'invalid writes leave preferences unchanged');
     const article = { url: 'https://blog.test/a', title: 'A real article', content: 'Full source excerpt', summary: 'Source excerpt', source: 'blog.test', published_at: new Date().toISOString(), category: 'Education' };
     const digest = { run_key: '2026-11-20', generated_at: new Date().toISOString(), items: [article], topics: ['Education'], candidate_count: 1 };
     const payload = { articles: [article], digest };

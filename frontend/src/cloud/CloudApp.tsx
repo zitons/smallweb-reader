@@ -3,6 +3,8 @@ import type { ComponentChildren } from 'preact';
 import { getInitialTheme, persistTheme } from '../lib/theme';
 import { clearSession, hasSession, login, request } from './client';
 import type { Article, Feed, Feedback } from './client';
+import { Settings, defaultSettings } from './Settings';
+import type { ReaderSettings, SettingsResponse } from './Settings';
 import './reader.css';
 
 function Icon({ name }: { name: string }) {
@@ -19,6 +21,7 @@ function Icon({ name }: { name: string }) {
     sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1" /></>,
     refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" /></>,
     logout: <><path d="M10 4H4v16h6m4-12 4 4-4 4m-6-4h12" /></>,
+    settings: <><circle cx="12" cy="12" r="3" /><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 2 3 3-1 3 1 2-3 3-2-1-3 2-2-2-3-3-1-1-3z" /></>,
     rss: <><circle cx="5" cy="19" r="1" /><path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16" /></>,
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24">{paths[name] || paths.book}</svg>;
@@ -43,6 +46,10 @@ export function CloudApp() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [hideRead, setHideRead] = useState(false);
   const [query, setQuery] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [preferences, setPreferences] = useState<ReaderSettings>(() => ({ ...structuredClone(defaultSettings), theme: getInitialTheme() }));
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const [preferencesLoading, setPreferencesLoading] = useState(false);
   const loadId = useRef(0);
 
   useEffect(() => {
@@ -75,6 +82,33 @@ export function CloudApp() {
   }
   useEffect(() => { void load(); }, [authenticated, view, digestId]);
 
+  function applyPreferences(next: ReaderSettings) {
+    setPreferences(next); setMode(next.theme); persistTheme(next.theme); setHideRead(next.hide_read);
+  }
+  async function loadPreferences() {
+    setPreferencesLoading(true); setPreferencesLoaded(false);
+    try {
+      const response = await request<SettingsResponse>('/api/settings');
+      if (!hasSession()) return;
+      applyPreferences(response.configured ? response.settings : { ...response.settings, theme: getInitialTheme() });
+      setPreferencesLoaded(true);
+    } catch (e) { setError(e instanceof Error ? e.message : '设置加载失败'); }
+    finally { setPreferencesLoading(false); }
+  }
+  useEffect(() => { if (authenticated) void loadPreferences(); else { setShowSettings(false); setPreferencesLoaded(false); } }, [authenticated]);
+  async function savePreferences(next: ReaderSettings) {
+    const response = await request<SettingsResponse>('/api/settings', next);
+    applyPreferences(response.settings); return response.settings;
+  }
+  async function toggleTheme() {
+    const next = mode === 'dark' ? 'light' : 'dark';
+    if (!authenticated) { setMode(next); persistTheme(next); return; }
+    try {
+      const response = await request<SettingsResponse>('/api/settings', { theme: next });
+      setPreferences(response.settings); setMode(next); persistTheme(next);
+    } catch (e) { setError(e instanceof Error ? e.message : '主题保存失败'); }
+  }
+
   function logout() {
     loadId.current++; clearSession(); setAuthenticated(false); setFeed(null); setLibrary([]); setError(''); setPassword(''); setLoading(false); setPending(null);
   }
@@ -98,13 +132,13 @@ export function CloudApp() {
   const shown = items.filter(i => (!hideRead || !i.feedback?.is_read) && (!search || [i.title, i.source, i.summary].join(' ').toLowerCase().includes(search)));
   const profile = feed?.digest?.profile;
   const verdictLabel = { useful: '已标记有收获', topic: '已减少该话题', quality: '已记录质量问题', known: '已标记了解过' };
-  const tab = (which: 'digest' | 'saved', sidebar = false) => <button type="button" class={sidebar ? `side-item ${view === which ? 'selected' : ''}` : `tab ${view === which ? 'active' : ''}`} aria-label={sidebar ? which === 'digest' ? '每日精选' : '我的收藏' : which === 'digest' ? '精选' : '收藏'} aria-current={view === which ? 'page' : undefined} onClick={() => setView(which)}><Icon name={which === 'digest' ? sidebar ? 'inbox' : 'book' : 'save'} />{sidebar ? which === 'digest' ? '每日精选' : '我的收藏' : which === 'digest' ? '精选' : '收藏'}<span class="Counter">{which === 'digest' ? feed?.digest?.items.length || 0 : library.length}</span></button>;
+  const tab = (which: 'digest' | 'saved', sidebar = false) => <button type="button" class={sidebar ? `side-item ${view === which ? 'selected' : ''}` : `tab ${view === which ? 'active' : ''}`} aria-label={sidebar ? which === 'digest' ? '每日精选' : '我的收藏' : which === 'digest' ? '精选' : '收藏'} disabled={showSettings} aria-current={view === which ? 'page' : undefined} onClick={() => setView(which)}><Icon name={which === 'digest' ? sidebar ? 'inbox' : 'book' : 'save'} />{sidebar ? which === 'digest' ? '每日精选' : '我的收藏' : which === 'digest' ? '精选' : '收藏'}<span class="Counter">{which === 'digest' ? feed?.digest?.items.length || 0 : library.length}</span></button>;
 
-  return <div class="reader-app">
-    <header class="topbar"><a href={import.meta.env.BASE_URL} class="brand"><Icon name="book" />Small Web</a><span class="top-separator">/</span><span class="top-location">你的阅读空间</span><div class="header-actions"><button type="button" class="btn icon-button" aria-label={mode === 'dark' ? '切换浅色' : '切换深色'} title={mode === 'dark' ? '切换浅色' : '切换深色'} onClick={() => { const next = mode === 'dark' ? 'light' : 'dark'; persistTheme(next); setMode(next); }}><Icon name={mode === 'dark' ? 'sun' : 'moon'} /></button>{authenticated && <button type="button" class="btn btn-sm" onClick={logout}><Icon name="logout" /><span class="logout-label">退出</span></button>}</div></header>
+  return <div class={`reader-app density-${preferences.density}`}>
+    <header class="topbar"><a href={import.meta.env.BASE_URL} class="brand"><Icon name="book" />Small Web</a><span class="top-separator">/</span><span class="top-location">你的阅读空间</span><div class="header-actions">{authenticated && <button type="button" class="btn icon-button" aria-label="设置" title="设置" onClick={() => setShowSettings(true)}><Icon name="settings" /></button>}<button type="button" class="btn icon-button" disabled={authenticated && (!preferencesLoaded || showSettings)} aria-label={mode === 'dark' ? '切换浅色' : '切换深色'} title={mode === 'dark' ? '切换浅色' : '切换深色'} onClick={() => void toggleTheme()}><Icon name={mode === 'dark' ? 'sun' : 'moon'} /></button>{authenticated && <button type="button" class="btn btn-sm" onClick={logout}><Icon name="logout" /><span class="logout-label">退出</span></button>}</div></header>
     {!authenticated ? <main class="login-main"><section class="Box login-box"><Icon name="book" /><h1>登录 Small Web</h1><p>你的独立博客阅读清单。</p><form onSubmit={async e => { e.preventDefault(); setLoading(true); setError(''); try { await login(password); setPassword(''); setAuthenticated(true); } catch (err) { setError(err instanceof Error ? err.message : '登录失败'); } finally { setLoading(false); } }}><label for="reader-password">阅读密码</label><input id="reader-password" class="form-control" type="password" autoComplete="current-password" required value={password} onInput={e => setPassword(e.currentTarget.value)} /><button class="btn login-button" type="submit" disabled={loading}>{loading ? '登录中…' : '进入阅读'}</button></form>{error && <p role="alert" class="reader-error">{error}</p>}</section></main>
-      : <div class="workspace"><aside class="sidebar"><div class="sidebar-heading">阅读清单</div><nav aria-label="主导航">{tab('digest', true)}{tab('saved', true)}</nav><div class="sidebar-heading interests-heading">关注的方向</div><div class="topics">{feed?.digest?.topics.map(topic => <div class="topic" key={topic}>{topic}</div>)}</div><div class="sidebar-footer"><Icon name="rss" />Kagi Small Web<br /><span class="sidebar-subtext">独立博客，原文摘录</span></div></aside>
-        <main class="reader-main"><div class="page-heading"><div><h1>{view === 'saved' ? '我的收藏' : '每日精选'}</h1><p>{view === 'saved' ? '留给以后慢慢读的文章。' : '从你关注的方向里，发现值得读的文章。'}</p></div><div class="page-tools">{view === 'digest' && feed?.digest && <span class="Label">{date(feed.digest.generated_at)}</span>}<button type="button" class="btn icon-button" aria-label="刷新" title="刷新文章" disabled={loading} onClick={() => void load()}><Icon name="refresh" /></button></div></div>
+      : <div class="workspace"><aside class="sidebar"><div class="sidebar-heading">阅读清单</div><nav aria-label="主导航">{tab('digest', true)}{tab('saved', true)}</nav><div class="sidebar-heading interests-heading">关注的方向</div><div class="topics">{(preferencesLoaded ? preferences.topics.map(t => t.name) : feed?.digest?.topics || []).map(topic => <div class="topic" key={topic}>{topic}</div>)}</div><div class="sidebar-footer"><Icon name="rss" />Kagi Small Web<br /><span class="sidebar-subtext">独立博客，原文摘录</span></div></aside>
+        <main class="reader-main">{showSettings ? <>{error && <div role="alert" class="reader-error">{error}</div>}{preferencesLoaded ? <Settings value={preferences} onSave={savePreferences} onClose={() => setShowSettings(false)} /> : <div class="empty"><p role="status">{preferencesLoading ? '正在加载设置…' : '设置加载失败，请重试。'}</p><button type="button" class="btn" disabled={preferencesLoading} onClick={() => void loadPreferences()}>重新加载设置</button><button type="button" class="btn" onClick={() => setShowSettings(false)}>返回阅读</button></div>}</> : <><div class="page-heading"><div><h1>{view === 'saved' ? '我的收藏' : '每日精选'}</h1><p>{view === 'saved' ? '留给以后慢慢读的文章。' : '从你关注的方向里，发现值得读的文章。'}</p></div><div class="page-tools">{view === 'digest' && feed?.digest && <span class="Label">{date(feed.digest.generated_at)}</span>}<button type="button" class="btn icon-button" aria-label="刷新" title="刷新文章" disabled={loading} onClick={() => void load()}><Icon name="refresh" /></button></div></div>
           <nav class="tabs" aria-label="阅读视图">{tab('digest')}{tab('saved')}</nav>
           <div class="filter-bar"><div class="search-wrap"><Icon name="search" /><input class="form-control" placeholder="筛选标题、作者或内容…" aria-label="筛选文章" type="search" value={query} onInput={e => setQuery(e.currentTarget.value)} /></div><label class="read-filter"><input type="checkbox" checked={hideRead} onChange={e => setHideRead(e.currentTarget.checked)} />隐藏已读</label>{view === 'digest' && Boolean(feed?.history.length) && <select class="form-select history-select" aria-label="选择历史精选" value={digestId} onChange={e => setDigestId(e.currentTarget.value)}><option value="latest">最新一期</option>{feed?.history.map(d => <option key={d.id} value={d.id}>{d.run_key}</option>)}</select>}</div>
           {view === 'digest' && profile && <details class="profile-note"><summary><Icon name="info" />{profile.mode === 'cold_start' ? '推荐正在认识你的兴趣' : `已参考 ${profile.positive_samples} 篇你认可的文章`}<span class="note-short">标记“有收获”，让下次推荐更贴近你</span><span class="details-arrow">⌄</span></summary><p>{profile.mode === 'cold_start' ? '当前使用初始兴趣描述探索，可能不相关。' : `已形成 ${profile.clusters} 个兴趣组，${profile.mode === 'learning' ? '仍参考初始兴趣描述。' : '以你认可的文章为推荐依据。'}`}你认可的文章会在下次每日更新时参与推荐。点击、收藏和已读不会自动视为喜欢。</p></details>}
@@ -116,7 +150,7 @@ export function CloudApp() {
               {less === article.url && <div class="feedback-options"><span>哪里不合适？</span>{[['topic', '话题不感兴趣'], ['quality', '质量不佳'], ['known', '已经了解']].map(([action, label]) => <button type="button" key={action} disabled={pending !== null} onClick={() => void act(article, action)}>{label}</button>)}</div>}
               {article.feedback?.verdict && <div class="verdict-row"><span class="verdict">{verdictLabel[article.feedback.verdict]}</span><button type="button" class="clear-verdict" disabled={pending !== null} onClick={() => void act(article, 'clear')}>撤销评价</button></div>}
             </div></article>)}
-          </section><footer><span>Small Web · 原文摘录，不生成 AI 摘要</span><span>每天更新，慢慢读</span></footer>
+          </section><footer><span>Small Web · 原文摘录，不生成 AI 摘要</span><span>每天更新，慢慢读</span></footer></>}
         </main>
       </div>}
   </div>;
