@@ -5,12 +5,15 @@
   "compatibility_date": "2026-08-01",
   "workers_dev": true,
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:4173"
+    "ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:4173,https://zitons.github.io"
   },
-  "d1_databases": [{
-    "binding": "DB",
-    "database_name": "smallweb-reader",
-    "database_id": "00000000-0000-0000-0000-000000000000",
-    "migrations_dir": "migrations"
-  }]
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "smallweb-reader",
+      "database_id": "4149c709-408f-42b6-acf3-20d5a4beea62",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "account_id": "a1c91793110b9b05e06c1bc6c889b0c4"
 }
