@@ -1,0 +1,35 @@
+name: Check cloud reader
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Test daily selection and no-summary mode
+        run: uv run --with pytest --with pytest-asyncio python -m pytest tests/test_cloud_generation.py tests/test_excerpt_mode.py -q
+      - run: npm ci
+        working-directory: cloud/worker
+      - run: npm run typecheck && npm test
+        working-directory: cloud/worker
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+        env:
+          VITE_CLOUD_MODE: 'true'
+          VITE_API_BASE_URL: https://example.invalid
+          VITE_BASE_PATH: /smallweb-reader/
