@@ -1,0 +1,19 @@
+{
+  "name": "smallweb-reader-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply smallweb-reader --local",
+    "migrate:remote": "wrangler d1 migrations apply smallweb-reader --remote",
+    "typecheck": "tsc --noEmit",
+    "test": "wrangler deploy --dry-run --outdir .test-build && node --test tests/worker.test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.0.0",
+    "miniflare": "^4.0.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,30 @@
+# These are retrieval interests, not claims about article quality.
+topics:
+  - name: 认知科学
+    description: "Cognitive science, cognitive psychology, memory, attention, reasoning, metacognition, experimental research on how people learn and think."
+  - name: 间隔重复
+    description: "Spaced repetition, retrieval practice, active recall, long-term memory, Anki, FSRS, forgetting curves, practical evidence-based learning methods."
+  - name: 学校教育
+    description: "School education, classroom teaching, pedagogy, curriculum, assessment, learning science, teachers' experiences and evidence-based educational practice."
+  - name: 计算机
+    description: "Computer science, programming, algorithms, operating systems, databases, distributed systems, software engineering, detailed technical explanations and experience."
+  - name: 开源
+    description: "Open-source software, free software, FOSS, maintainership, contributing to projects, open development, software freedom and independent software tools."
+  - name: 理性思考
+    description: "Rational thinking, epistemology, Bayesian reasoning, critical thinking, cognitive biases, uncertainty, decision making, careful arguments and evidence."
+feeds:
+  - https://kagi.com/api/v1/smallweb/feed/?limit=200
+embedding:
+  base_url: https://api.siliconflow.cn/v1
+  model: BAAI/bge-m3
+candidate_limit: 100
+pool_limit: 200
+max_age_days: 30
+daily_limit: 10
+max_per_author: 2
+max_per_topic: 3
+# Initial heuristics; tune from actual reading feedback.
+min_similarity: 0.42
+duplicate_similarity: 0.90
+exploration_slots: 1
+timezone: Asia/Shanghai
