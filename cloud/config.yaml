@@ -5,7 +5,7 @@ feeds:
 embedding:
   base_url: https://api.siliconflow.cn/v1
   model: BAAI/bge-m3
-candidate_limit: 100
+# All entries returned by the feed are archived; only ranking uses pool/age limits.
 pool_limit: 200
 max_age_days: 30
 daily_limit: 10

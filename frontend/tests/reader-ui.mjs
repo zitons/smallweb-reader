@@ -19,7 +19,8 @@ else {
  fixture = await response.json();
 }
 const articles = fixture.digest.items;
-const states = new Map(articles.map(a => [a.url, { url: a.url, verdict: null, saved: 0, is_read: 0 }]));
+const archiveArticles = [...articles, ...Array.from({ length: 65 }, (_, i) => ({ ...articles[0], url: `https://archive.test/${i}`, title: `Archive-only ${i}`, summary: `Old article ${i} outside the daily selection.`, published_at: '2020-01-01T00:00:00+00:00' }))];
+const states = new Map(archiveArticles.map(a => [a.url, { url: a.url, verdict: null, saved: 0, is_read: 0 }]));
 let expireNextFeed = false;
 let settings = JSON.parse(await readFile(new URL('../../cloud/preferences.json', import.meta.url), 'utf8'));
 let settingsConfigured = false;
@@ -41,6 +42,12 @@ try {
       data = { settings, configured: settingsConfigured, updated_at: settingsConfigured ? new Date().toISOString() : null };
     }
     else if (path === '/api/feed') data = { ...fixture, digest: { ...fixture.digest, items: articles.map(a => ({ ...a, feedback: states.get(a.url) })) } };
+    else if (path === '/api/articles') {
+      const params = new URL(route.request().url()).searchParams;
+      const q = (params.get('q') || '').toLowerCase(), offset = Number(params.get('cursor') || 0), limit = Number(params.get('limit') || 30);
+      const matches = archiveArticles.filter(a => (params.get('scope') !== 'saved' || states.get(a.url).saved) && (params.get('unread') !== '1' || !states.get(a.url).is_read) && [a.title, a.source, a.summary].join(' ').toLowerCase().includes(q));
+      data = { items: matches.slice(offset, offset + limit).map(a => ({ ...a, feedback: states.get(a.url) })), total: matches.length, counts: { all: archiveArticles.length, saved: [...states.values()].filter(s => s.saved).length }, next_cursor: offset + limit < matches.length ? String(offset + limit) : null };
+    }
     else if (path === '/api/library') data = { items: articles.filter(a => states.get(a.url).saved).map(a => ({ ...a, feedback: states.get(a.url) })) };
     else if (path === '/api/feedback') {
       const { url, action } = route.request().postDataJSON();
@@ -58,9 +65,23 @@ try {
   await page.goto(process.env.READER_WEB_URL || 'http://127.0.0.1:4173/smallweb-reader/');
   await page.getByLabel('阅读密码').fill(process.env.READER_PASSWORD);
   await page.getByRole('button', { name: '进入阅读', exact: true }).click();
-  await page.getByRole('heading', { name: '每日精选', exact: true }).waitFor();
+  await page.getByRole('heading', { name: '全部文章', exact: true }).waitFor();
   await page.locator('article').first().waitFor();
-  assert.equal(await page.locator('article').count(), articles.length);
+  assert.equal(await page.locator('article').count(), 30);
+  await page.getByRole('button', { name: '加载更多', exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll('article').length === 60);
+  await page.getByRole('button', { name: '加载更多', exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll('article').length === 75);
+  await page.getByLabel('筛选文章').fill('Archive-only 64');
+  await page.getByRole('heading', { name: 'Archive-only 64', exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelectorAll('article').length === 1);
+  assert.equal(await page.locator('article').count(), 1, 'search must reach an old article beyond the first page and digest');
+  await page.locator('article').first().getByRole('button', { name: '有收获', exact: true }).click();
+  await page.getByText('已标记有收获', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '撤销评价', exact: true }).click();
+  await page.locator('article').first().getByRole('button', { name: '设为未读', exact: true }).click();
+  await page.getByLabel('筛选文章').fill('');
+  await page.waitForFunction(() => document.querySelectorAll('article').length === 30);
   assert.ok(await page.locator('article').evaluateAll(rows => rows.filter(e => e.getBoundingClientRect().bottom <= innerHeight).length) >= 3, 'desktop should show several complete articles');
   assert.ok(await page.locator('.reader-app .btn').count(), 'must render Primer buttons');
   const first = page.locator('article').first();
@@ -120,6 +141,8 @@ try {
   await page.getByRole('button', { name: '保存设置', exact: true }).click();
   await page.getByText('已保存。阅读设置已生效，兴趣偏好将在下次每日更新时使用。', { exact: true }).waitFor();
   await page.getByRole('button', { name: '返回阅读', exact: true }).click();
+  await page.getByRole('button', { name: '精选', exact: true }).click();
+  await page.locator('article').first().waitFor();
   await page.waitForFunction(() => !document.querySelector('article button:disabled'));
   await page.getByRole('combobox').selectOption('latest');
   await page.evaluate(() => window.scrollTo(0, 0));

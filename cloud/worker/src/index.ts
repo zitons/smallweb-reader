@@ -126,22 +126,71 @@ async function feedback(request: Request, env: Env): Promise<Response> {
   return json({ feedback: await env.DB.prepare('SELECT * FROM feedback WHERE url = ?').bind(data.url).first() });
 }
 
+async function archive(url: URL, env: Env): Promise<Response> {
+  const query = (url.searchParams.get('q') || '').trim();
+  const scope = url.searchParams.get('scope') || 'all';
+  const unread = url.searchParams.get('unread') || '0';
+  const limit = Number(url.searchParams.get('limit') || 30);
+  if (query.length > 200 || !['all', 'saved'].includes(scope) || !['0', '1'].includes(unread)
+    || !Number.isInteger(limit) || limit < 1 || limit > 100) return json({ error: 'Invalid article filters.' }, 422);
+  const where: string[] = [], values: (string | number)[] = [];
+  if (scope === 'saved') where.push('COALESCE(f.saved,0)=1');
+  if (unread === '1') where.push('COALESCE(f.is_read,0)=0');
+  if (query) {
+    where.push("instr(lower(COALESCE(json_extract(a.item_json,'$.title'),'') || ' ' || COALESCE(json_extract(a.item_json,'$.source'),'') || ' ' || a.content),lower(?))>0");
+    values.push(query);
+  }
+  const join = ' FROM articles a LEFT JOIN feedback f ON f.url=a.url';
+  const filters = where.length ? ' WHERE ' + where.join(' AND ') : '';
+  const total = await env.DB.prepare('SELECT COUNT(*) AS n' + join + filters).bind(...values).first<{ n: number }>();
+  const cursor = url.searchParams.get('cursor');
+  if (cursor) {
+    try {
+      if (cursor.length > 8192) throw new Error();
+      const data = JSON.parse(new TextDecoder().decode(decode64(cursor)));
+      if (typeof data.date !== 'string' || data.date.length > 80 || !validUrl(data.url)) throw new Error();
+      where.push('(a.published_at < ? OR (a.published_at = ? AND a.url < ?))');
+      values.push(data.date, data.date, data.url);
+    } catch { return json({ error: 'Invalid page cursor.' }, 422); }
+  }
+  const result = await env.DB.prepare('SELECT a.url,a.item_json,a.published_at,f.verdict,f.is_read,f.saved,f.updated_at AS feedback_updated_at' + join
+    + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY a.published_at DESC,a.url DESC LIMIT ?').bind(...values, limit + 1).all<Json>();
+  const page = result.results.slice(0, limit), last = page.at(-1);
+  const counts = await env.DB.prepare('SELECT (SELECT COUNT(*) FROM articles) AS all_count,(SELECT COUNT(*) FROM feedback WHERE saved=1) AS saved_count').first<{ all_count: number; saved_count: number }>();
+  return json({ items: page.map(r => ({ ...JSON.parse(String(r.item_json)), feedback: r.feedback_updated_at ? { url: r.url, verdict: r.verdict, is_read: r.is_read, saved: r.saved, updated_at: r.feedback_updated_at } : null })),
+    total: total?.n || 0, counts: { all: counts?.all_count || 0, saved: counts?.saved_count || 0 },
+    next_cursor: result.results.length > limit && last ? encode64(encoder.encode(JSON.stringify({ date: last.published_at, url: last.url }))) : null });
+}
+
+function validArticles(articles: unknown, limit: number): articles is Json[] {
+  return Array.isArray(articles) && articles.length <= limit && articles.every(a => a && validUrl(a.url) && typeof a.title === 'string' && typeof a.content === 'string' && a.content.length <= 24000 && typeof a.published_at === 'string');
+}
+async function upsertArticles(articles: Json[], env: Env) {
+  const now = new Date().toISOString();
+  const statements = articles.map(a => env.DB.prepare(
+    'INSERT INTO articles(url,item_json,content,published_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET item_json=excluded.item_json,content=excluded.content,published_at=excluded.published_at,updated_at=excluded.updated_at',
+  ).bind(a.url, JSON.stringify({ ...a, content: undefined }), a.content, a.published_at, now));
+  for (let i = 0; i < statements.length; i += 40) await env.DB.batch(statements.slice(i, i + 40));
+}
+async function ingest(request: Request, env: Env): Promise<Response> {
+  const data = await body(request);
+  if (!validArticles(data.articles, 200)) return json({ error: 'Invalid articles.' }, 422);
+  await upsertArticles(data.articles, env);
+  return json({ ok: true, articles: data.articles.length });
+}
+
 async function publish(request: Request, env: Env): Promise<Response> {
   const data = await body(request);
   const digest = data.digest as Json | undefined;
-  const articles = data.articles as Json[] | undefined;
-  if (!digest || !Array.isArray(digest.items) || !Array.isArray(articles) || articles.length > 300 || digest.items.length > 50
+  const articles = data.articles;
+  if (!digest || !Array.isArray(digest.items) || !validArticles(articles, 300) || digest.items.length > 50
       || typeof digest.run_key !== 'string' || digest.run_key.length > 80 || !Number.isFinite(Date.parse(String(digest.generated_at)))) {
     return json({ error: 'Invalid digest.' }, 422);
   }
   const urls = new Set(articles.map(a => a.url));
   if (articles.some(a => !validUrl(a.url) || typeof a.title !== 'string' || typeof a.content !== 'string' || a.content.length > 24000)
       || (digest.items as Json[]).some(i => !validUrl(i.url) || !urls.has(i.url))) return json({ error: 'Invalid articles.' }, 422);
-  const now = new Date().toISOString();
-  const statements = articles.map(a => env.DB.prepare(
-    'INSERT INTO articles(url, item_json, content, published_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(url) DO UPDATE SET item_json=excluded.item_json, content=excluded.content, published_at=excluded.published_at, updated_at=excluded.updated_at',
-  ).bind(a.url, JSON.stringify({ ...a, content: undefined }), a.content, String(a.published_at || ''), now));
-  for (let i = 0; i < statements.length; i += 40) await env.DB.batch(statements.slice(i, i + 40));
+  await upsertArticles(articles, env);
   await env.DB.prepare(
     'INSERT INTO digests(run_key, generated_at, payload_json) VALUES (?, ?, ?) ON CONFLICT(run_key) DO UPDATE SET generated_at=excluded.generated_at, payload_json=excluded.payload_json',
   ).bind(digest.run_key, digest.generated_at, JSON.stringify(digest)).run();
@@ -188,6 +237,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path.startsWith('/internal/')) {
     if (!await equalSecret(bearer(request), env.SYNC_TOKEN)) return json({ error: 'Unauthorized.' }, 401);
     if (path === '/internal/publish' && request.method === 'POST') return publish(request, env);
+    if (path === '/internal/ingest' && request.method === 'POST') return ingest(request, env);
     if (path === '/internal/snapshot' && request.method === 'GET') {
       const articles = await env.DB.prepare('SELECT * FROM articles ORDER BY updated_at DESC LIMIT 300').all<Json>();
       const states = await env.DB.prepare('SELECT * FROM feedback').all();
@@ -203,6 +253,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === '/api/settings' && request.method === 'GET') return json(await readSettings(env));
   if (path === '/api/settings' && request.method === 'POST') return saveSettings(request, env);
   if (path === '/api/feed' && request.method === 'GET') return feed(url, env);
+  if (path === '/api/articles' && request.method === 'GET') return archive(url, env);
   if (path === '/api/feedback' && request.method === 'POST') return feedback(request, env);
   if (path === '/api/library' && request.method === 'GET') {
     const rows = await env.DB.prepare('SELECT a.item_json, f.* FROM feedback f JOIN articles a ON a.url=f.url WHERE f.saved=1 ORDER BY f.updated_at DESC LIMIT 500').all<Json>();

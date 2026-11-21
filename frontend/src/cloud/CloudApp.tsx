@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { getInitialTheme, persistTheme } from '../lib/theme';
 import { clearSession, hasSession, login, request } from './client';
-import type { Article, Feed, Feedback } from './client';
+import type { Article, ArticlePage, Feed, Feedback } from './client';
 import { Settings, defaultSettings } from './Settings';
 import type { ReaderSettings, SettingsResponse } from './Settings';
 import './reader.css';
@@ -36,8 +36,13 @@ export function CloudApp() {
   const [authenticated, setAuthenticated] = useState(hasSession());
   const [password, setPassword] = useState('');
   const [feed, setFeed] = useState<Feed | null>(null);
-  const [library, setLibrary] = useState<Article[]>([]);
-  const [view, setView] = useState<'digest' | 'saved'>('digest');
+  const [archiveItems, setArchiveItems] = useState<Article[]>([]);
+  const [counts, setCounts] = useState({ all: 0, saved: 0 });
+  const [archiveTotal, setArchiveTotal] = useState(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [archiveQuery, setArchiveQuery] = useState('');
+  const [view, setView] = useState<'all' | 'digest' | 'saved'>('all');
   const [digestId, setDigestId] = useState('latest');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -53,9 +58,9 @@ export function CloudApp() {
   const loadId = useRef(0);
 
   useEffect(() => {
-    document.title = 'Small Web · 每日精选';
+    document.title = 'Small Web · 阅读空间';
     document.documentElement.lang = 'zh-CN';
-    const expired = () => { loadId.current++; setAuthenticated(false); setFeed(null); setLibrary([]); setLoading(false); setPending(null); };
+    const expired = () => { loadId.current++; setAuthenticated(false); setFeed(null); setArchiveItems([]); setCounts({ all: 0, saved: 0 }); setLoading(false); setPending(null); };
     window.addEventListener('smallweb:expired', expired);
     return () => window.removeEventListener('smallweb:expired', expired);
   }, []);
@@ -65,22 +70,43 @@ export function CloudApp() {
     document.documentElement.setAttribute('data-light-theme', 'light');
   }, [mode]);
 
+  function articlePath(cursor?: string) {
+    const params = new URLSearchParams({ scope: view === 'saved' ? 'saved' : 'all', limit: '30', unread: hideRead ? '1' : '0', q: archiveQuery });
+    if (cursor) params.set('cursor', cursor);
+    return '/api/articles?' + params.toString();
+  }
   async function load() {
     if (!authenticated) return;
     const id = ++loadId.current;
-    setLoading(true); setError('');
+    setLoading(true); setLoadingMore(false); setError('');
+    if (view !== 'digest') { setArchiveItems([]); setArchiveTotal(0); setNextCursor(null); }
     try {
-      const [saved, nextFeed] = await Promise.all([
-        request<{ items: Article[] }>('/api/library'),
-        view === 'digest' ? request<Feed>(`/api/feed?digest=${encodeURIComponent(digestId)}`) : Promise.resolve(null),
+      const [page, nextFeed] = await Promise.all([
+        view === 'digest' ? Promise.resolve(null) : request<ArticlePage>(articlePath()),
+        request<Feed>(`/api/feed?digest=${encodeURIComponent(digestId)}`).catch(e => { if (view === 'digest') throw e; return null; }),
       ]);
       if (id !== loadId.current) return;
-      setLibrary(saved.items);
       if (nextFeed) setFeed(nextFeed);
+      if (page) {
+        setArchiveItems(page.items); setCounts(page.counts); setArchiveTotal(page.total); setNextCursor(page.next_cursor);
+      }
     } catch (e) { if (id === loadId.current) setError(e instanceof Error ? e.message : '加载失败'); }
     finally { if (id === loadId.current) setLoading(false); }
   }
-  useEffect(() => { void load(); }, [authenticated, view, digestId]);
+  async function loadMore() {
+    if (!nextCursor || loadingMore || loading) return;
+    const id = loadId.current;
+    setLoadingMore(true); setError('');
+    try {
+      const page = await request<ArticlePage>(articlePath(nextCursor));
+      if (id !== loadId.current) return;
+      setArchiveItems(items => [...new Map([...items, ...page.items].map(a => [a.url, a])).values()]);
+      setCounts(page.counts); setArchiveTotal(page.total); setNextCursor(page.next_cursor);
+    } catch (e) { if (id === loadId.current) setError(e instanceof Error ? e.message : '加载失败'); }
+    finally { if (id === loadId.current) setLoadingMore(false); }
+  }
+  useEffect(() => { const timer = window.setTimeout(() => setArchiveQuery(query.trim()), 250); return () => window.clearTimeout(timer); }, [query]);
+  useEffect(() => { void load(); }, [authenticated, view, view === 'digest' ? digestId : '', view === 'digest' ? '' : archiveQuery, view === 'digest' ? false : hideRead]);
 
   function applyPreferences(next: ReaderSettings) {
     setPreferences(next); setMode(next.theme); persistTheme(next.theme); setHideRead(next.hide_read);
@@ -110,7 +136,7 @@ export function CloudApp() {
   }
 
   function logout() {
-    loadId.current++; clearSession(); setAuthenticated(false); setFeed(null); setLibrary([]); setError(''); setPassword(''); setLoading(false); setPending(null);
+    loadId.current++; clearSession(); setAuthenticated(false); setFeed(null); setArchiveItems([]); setCounts({ all: 0, saved: 0 }); setError(''); setPassword(''); setLoading(false); setPending(null);
   }
   async function act(article: Article, action: string) {
     if (pending) return;
@@ -119,38 +145,46 @@ export function CloudApp() {
       const result = await request<{ feedback: Feedback }>('/api/feedback', { url: article.url, action });
       const updated = { ...article, feedback: result.feedback };
       setFeed(f => f?.digest ? { ...f, digest: { ...f.digest, items: f.digest.items.map(i => i.url === article.url ? updated : i) } } : f);
-      setLibrary(items => result.feedback.saved
-        ? items.some(i => i.url === article.url) ? items.map(i => i.url === article.url ? updated : i) : [updated, ...items]
-        : items.filter(i => i.url !== article.url));
+      setArchiveItems(items => items.map(i => i.url === article.url ? updated : i));
+      setCounts(c => ({ ...c, saved: c.saved + Number(Boolean(result.feedback.saved)) - Number(Boolean(article.feedback?.saved)) }));
+      if (view !== 'digest') {
+        const wasVisible = (view !== 'saved' || Boolean(article.feedback?.saved)) && (!hideRead || !article.feedback?.is_read);
+        const isVisible = (view !== 'saved' || Boolean(result.feedback.saved)) && (!hideRead || !result.feedback.is_read);
+        setArchiveTotal(n => Math.max(0, n + Number(isVisible) - Number(wasVisible)));
+      }
       setLess(null);
     } catch (e) { setError(e instanceof Error ? e.message : '保存失败，请重试'); }
     finally { setPending(null); }
   }
 
-  const items = view === 'saved' ? library : (feed?.digest?.items || []);
+  const items = view === 'digest' ? (feed?.digest?.items || []) : archiveItems;
   const search = query.trim().toLowerCase();
-  const shown = items.filter(i => (!hideRead || !i.feedback?.is_read) && (!search || [i.title, i.source, i.summary].join(' ').toLowerCase().includes(search)));
+  const shown = items.filter(i => (view !== 'saved' || Boolean(i.feedback?.saved)) && (!hideRead || !i.feedback?.is_read) && (view !== 'digest' || !search || [i.title, i.source, i.summary].join(' ').toLowerCase().includes(search)));
   const profile = feed?.digest?.profile;
   const verdictLabel = { useful: '已标记有收获', topic: '已减少该话题', quality: '已记录质量问题', known: '已标记了解过' };
-  const tab = (which: 'digest' | 'saved', sidebar = false) => <button type="button" class={sidebar ? `side-item ${view === which ? 'selected' : ''}` : `tab ${view === which ? 'active' : ''}`} aria-label={sidebar ? which === 'digest' ? '每日精选' : '我的收藏' : which === 'digest' ? '精选' : '收藏'} disabled={showSettings} aria-current={view === which ? 'page' : undefined} onClick={() => setView(which)}><Icon name={which === 'digest' ? sidebar ? 'inbox' : 'book' : 'save'} />{sidebar ? which === 'digest' ? '每日精选' : '我的收藏' : which === 'digest' ? '精选' : '收藏'}<span class="Counter">{which === 'digest' ? feed?.digest?.items.length || 0 : library.length}</span></button>;
+  const tab = (which: 'all' | 'digest' | 'saved', sidebar = false) => {
+    const label = which === 'all' ? '全部文章' : which === 'saved' ? sidebar ? '我的收藏' : '收藏' : sidebar ? '每日精选' : '精选';
+    const count = which === 'all' ? counts.all : which === 'saved' ? counts.saved : feed?.digest?.items.length || 0;
+    return <button type="button" class={sidebar ? `side-item ${view === which ? 'selected' : ''}` : `tab ${view === which ? 'active' : ''}`} aria-label={label} disabled={showSettings} aria-current={view === which ? 'page' : undefined} onClick={() => { setView(which); setQuery(''); }}><Icon name={which === 'all' ? 'inbox' : which === 'saved' ? 'save' : 'book'} />{label}<span class="Counter">{count}</span></button>;
+  };
 
   return <div class={`reader-app density-${preferences.density}`}>
     <header class="topbar"><a href={import.meta.env.BASE_URL} class="brand"><Icon name="book" />Small Web</a><span class="top-separator">/</span><span class="top-location">你的阅读空间</span><div class="header-actions">{authenticated && <button type="button" class="btn icon-button" aria-label="设置" title="设置" onClick={() => setShowSettings(true)}><Icon name="settings" /></button>}<button type="button" class="btn icon-button" disabled={authenticated && (!preferencesLoaded || showSettings)} aria-label={mode === 'dark' ? '切换浅色' : '切换深色'} title={mode === 'dark' ? '切换浅色' : '切换深色'} onClick={() => void toggleTheme()}><Icon name={mode === 'dark' ? 'sun' : 'moon'} /></button>{authenticated && <button type="button" class="btn btn-sm" onClick={logout}><Icon name="logout" /><span class="logout-label">退出</span></button>}</div></header>
-    {!authenticated ? <main class="login-main"><section class="Box login-box"><Icon name="book" /><h1>登录 Small Web</h1><p>你的独立博客阅读清单。</p><form onSubmit={async e => { e.preventDefault(); setLoading(true); setError(''); try { await login(password); setPassword(''); setAuthenticated(true); } catch (err) { setError(err instanceof Error ? err.message : '登录失败'); } finally { setLoading(false); } }}><label for="reader-password">阅读密码</label><input id="reader-password" class="form-control" type="password" autoComplete="current-password" required value={password} onInput={e => setPassword(e.currentTarget.value)} /><button class="btn login-button" type="submit" disabled={loading}>{loading ? '登录中…' : '进入阅读'}</button></form>{error && <p role="alert" class="reader-error">{error}</p>}</section></main>
-      : <div class="workspace"><aside class="sidebar"><div class="sidebar-heading">阅读清单</div><nav aria-label="主导航">{tab('digest', true)}{tab('saved', true)}</nav><div class="sidebar-heading interests-heading">关注的方向</div><div class="topics">{(preferencesLoaded ? preferences.topics.map(t => t.name) : feed?.digest?.topics || []).map(topic => <div class="topic" key={topic}>{topic}</div>)}</div><div class="sidebar-footer"><Icon name="rss" />Kagi Small Web<br /><span class="sidebar-subtext">独立博客，原文摘录</span></div></aside>
-        <main class="reader-main">{showSettings ? <>{error && <div role="alert" class="reader-error">{error}</div>}{preferencesLoaded ? <Settings value={preferences} onSave={savePreferences} onClose={() => setShowSettings(false)} /> : <div class="empty"><p role="status">{preferencesLoading ? '正在加载设置…' : '设置加载失败，请重试。'}</p><button type="button" class="btn" disabled={preferencesLoading} onClick={() => void loadPreferences()}>重新加载设置</button><button type="button" class="btn" onClick={() => setShowSettings(false)}>返回阅读</button></div>}</> : <><div class="page-heading"><div><h1>{view === 'saved' ? '我的收藏' : '每日精选'}</h1><p>{view === 'saved' ? '留给以后慢慢读的文章。' : '从你关注的方向里，发现值得读的文章。'}</p></div><div class="page-tools">{view === 'digest' && feed?.digest && <span class="Label">{date(feed.digest.generated_at)}</span>}<button type="button" class="btn icon-button" aria-label="刷新" title="刷新文章" disabled={loading} onClick={() => void load()}><Icon name="refresh" /></button></div></div>
-          <nav class="tabs" aria-label="阅读视图">{tab('digest')}{tab('saved')}</nav>
+    {!authenticated ? <main class="login-main"><section class="Box login-box"><Icon name="book" /><h1>登录 Small Web</h1><p>你的独立博客文章库。</p><form onSubmit={async e => { e.preventDefault(); setLoading(true); setError(''); try { await login(password); setPassword(''); setAuthenticated(true); } catch (err) { setError(err instanceof Error ? err.message : '登录失败'); } finally { setLoading(false); } }}><label for="reader-password">阅读密码</label><input id="reader-password" class="form-control" type="password" autoComplete="current-password" required value={password} onInput={e => setPassword(e.currentTarget.value)} /><button class="btn login-button" type="submit" disabled={loading}>{loading ? '登录中…' : '进入阅读'}</button></form>{error && <p role="alert" class="reader-error">{error}</p>}</section></main>
+      : <div class="workspace"><aside class="sidebar"><div class="sidebar-heading">阅读清单</div><nav aria-label="主导航">{tab('all', true)}{tab('digest', true)}{tab('saved', true)}</nav><div class="sidebar-heading interests-heading">关注的方向</div><div class="topics">{(preferencesLoaded ? preferences.topics.map(t => t.name) : feed?.digest?.topics || []).map(topic => <div class="topic" key={topic}>{topic}</div>)}</div><div class="sidebar-footer"><Icon name="rss" />Kagi Small Web<br /><span class="sidebar-subtext">独立博客，原文摘录</span></div></aside>
+        <main class="reader-main">{showSettings ? <>{error && <div role="alert" class="reader-error">{error}</div>}{preferencesLoaded ? <Settings value={preferences} onSave={savePreferences} onClose={() => setShowSettings(false)} /> : <div class="empty"><p role="status">{preferencesLoading ? '正在加载设置…' : '设置加载失败，请重试。'}</p><button type="button" class="btn" disabled={preferencesLoading} onClick={() => void loadPreferences()}>重新加载设置</button><button type="button" class="btn" onClick={() => setShowSettings(false)}>返回阅读</button></div>}</> : <><div class="page-heading"><div><h1>{view === 'all' ? '全部文章' : view === 'saved' ? '我的收藏' : '每日精选'}</h1><p>{view === 'all' ? '已抓取的文章都在这里，随时阅读、收藏和评价。' : view === 'saved' ? '留给以后慢慢读的文章。' : '从你关注的方向里，发现值得读的文章。'}</p></div><div class="page-tools">{view === 'digest' && feed?.digest && <span class="Label">{date(feed.digest.generated_at)}</span>}<button type="button" class="btn icon-button" aria-label="刷新" title="刷新文章" disabled={loading} onClick={() => void load()}><Icon name="refresh" /></button></div></div>
+          <nav class="tabs" aria-label="阅读视图">{tab('all')}{tab('digest')}{tab('saved')}</nav>
           <div class="filter-bar"><div class="search-wrap"><Icon name="search" /><input class="form-control" placeholder="筛选标题、作者或内容…" aria-label="筛选文章" type="search" value={query} onInput={e => setQuery(e.currentTarget.value)} /></div><label class="read-filter"><input type="checkbox" checked={hideRead} onChange={e => setHideRead(e.currentTarget.checked)} />隐藏已读</label>{view === 'digest' && Boolean(feed?.history.length) && <select class="form-select history-select" aria-label="选择历史精选" value={digestId} onChange={e => setDigestId(e.currentTarget.value)}><option value="latest">最新一期</option>{feed?.history.map(d => <option key={d.id} value={d.id}>{d.run_key}</option>)}</select>}</div>
           {view === 'digest' && profile && <details class="profile-note"><summary><Icon name="info" />{profile.mode === 'cold_start' ? '推荐正在认识你的兴趣' : `已参考 ${profile.positive_samples} 篇你认可的文章`}<span class="note-short">标记“有收获”，让下次推荐更贴近你</span><span class="details-arrow">⌄</span></summary><p>{profile.mode === 'cold_start' ? '当前使用初始兴趣描述探索，可能不相关。' : `已形成 ${profile.clusters} 个兴趣组，${profile.mode === 'learning' ? '仍参考初始兴趣描述。' : '以你认可的文章为推荐依据。'}`}你认可的文章会在下次每日更新时参与推荐。点击、收藏和已读不会自动视为喜欢。</p></details>}
           {error && <div role="alert" class="reader-error">{error}<button type="button" aria-label="关闭错误提示" onClick={() => setError('')}>×</button></div>}
-          <section class="Box article-box" aria-label="文章清单"><div class="Box-header list-header"><span><Icon name="inbox" /><strong>{loading ? '正在加载…' : `${shown.length} 篇文章`}</strong></span><span>{view === 'saved' ? '已收藏' : feed?.digest ? `${feed.digest.candidate_count} 篇候选` : '等待更新'}</span></div>
-            {loading ? <p role="status" class="empty">正在加载…</p> : !shown.length ? <div class="empty">{search ? '没有符合筛选条件的文章。' : view === 'saved' ? '还没有收藏。读到想保留的文章时，点一下收藏。' : items.length ? '这一期已经读完了。取消“隐藏已读”可以重新查看。' : '还没有生成精选。第一轮每日任务完成后会显示在这里。'}</div> : shown.map(article => <article class="Box-row article-row" key={article.url}><div class={`row-icon ${article.feedback?.is_read ? 'read' : ''}`}><Icon name={article.feedback?.is_read ? 'check' : 'book'} /></div><div class="row-main"><h2 class="article-title"><a href={article.url} target="_blank" rel="noopener noreferrer">{article.title}</a></h2><div class="article-meta"><span class="source">{article.source}</span><span>·</span><span>{date(article.published_at)}</span>{Boolean(article.feedback?.is_read) && <span class="Label">已读</span>}{article.exploration && <span class="Label">探索</span>}</div><p class={`excerpt ${expanded === article.url ? 'expanded' : ''}`}>{article.summary}</p>
+          <section class="Box article-box" aria-label="文章清单"><div class="Box-header list-header"><span><Icon name="inbox" /><strong>{loading ? '正在加载…' : view === 'digest' ? `${shown.length} 篇文章` : `${shown.length} / ${archiveTotal} 篇文章`}</strong></span><span>{view === 'all' ? '全部已入库文章' : view === 'saved' ? '已收藏' : feed?.digest ? `${feed.digest.candidate_count} 篇候选` : '等待更新'}</span></div>
+            {loading ? <p role="status" class="empty">正在加载…</p> : !shown.length ? <div class="empty">{search ? '没有符合筛选条件的文章。' : view === 'saved' ? '还没有收藏。读到想保留的文章时，点一下收藏。' : view === 'all' ? '暂时没有符合条件的文章，可以取消筛选或稍后刷新。' : items.length ? '这一期已经读完了。取消“隐藏已读”可以重新查看。' : '还没有生成精选。第一轮每日任务完成后会显示在这里。'}</div> : shown.map(article => <article class="Box-row article-row" key={article.url}><div class={`row-icon ${article.feedback?.is_read ? 'read' : ''}`}><Icon name={article.feedback?.is_read ? 'check' : 'book'} /></div><div class="row-main"><h2 class="article-title"><a href={article.url} target="_blank" rel="noopener noreferrer">{article.title}</a></h2><div class="article-meta"><span class="source">{article.source}</span><span>·</span><span>{date(article.published_at)}</span>{Boolean(article.feedback?.is_read) && <span class="Label">已读</span>}{article.exploration && <span class="Label">探索</span>}</div><p class={`excerpt ${expanded === article.url ? 'expanded' : ''}`}>{article.summary}</p>
               <div class="row-actions"><button type="button" class={`btn ${article.feedback?.verdict === 'useful' ? 'active' : ''}`} disabled={pending !== null} aria-pressed={article.feedback?.verdict === 'useful'} onClick={() => void act(article, article.feedback?.verdict === 'useful' ? 'clear' : 'useful')}><Icon name="like" />有收获</button><button type="button" class={`btn ${article.feedback?.saved ? 'active' : ''}`} disabled={pending !== null} onClick={() => void act(article, article.feedback?.saved ? 'unsave' : 'save')}><Icon name="save" />{article.feedback?.saved ? '已收藏' : '收藏'}</button><button type="button" class="btn btn-linklike" disabled={pending !== null} onClick={() => void act(article, article.feedback?.is_read ? 'unread' : 'read')}>{article.feedback?.is_read ? '设为未读' : '标记已读'}</button><button type="button" class="btn btn-linklike" disabled={pending !== null} aria-expanded={less === article.url} onClick={() => setLess(less === article.url ? null : article.url)}>少推荐这类</button><button type="button" class="btn btn-linklike" aria-expanded={expanded === article.url} onClick={() => setExpanded(expanded === article.url ? null : article.url)}>{expanded === article.url ? '收起摘录' : '展开摘录'}</button><a class="original-link" href={article.url} target="_blank" rel="noopener noreferrer">原文<Icon name="arrow" /></a></div>
               {profile?.mode !== 'cold_start' && article.reason && <p class="recommendation-reason">{article.reason}</p>}
               {less === article.url && <div class="feedback-options"><span>哪里不合适？</span>{[['topic', '话题不感兴趣'], ['quality', '质量不佳'], ['known', '已经了解']].map(([action, label]) => <button type="button" key={action} disabled={pending !== null} onClick={() => void act(article, action)}>{label}</button>)}</div>}
               {article.feedback?.verdict && <div class="verdict-row"><span class="verdict">{verdictLabel[article.feedback.verdict]}</span><button type="button" class="clear-verdict" disabled={pending !== null} onClick={() => void act(article, 'clear')}>撤销评价</button></div>}
             </div></article>)}
-          </section><footer><span>Small Web · 原文摘录，不生成 AI 摘要</span><span>每天更新，慢慢读</span></footer></>}
+          </section>{view !== 'digest' && !loading && <div class="archive-pagination"><span>已显示 {shown.length} / {archiveTotal} 篇，搜索范围为整个文章库</span>{nextCursor && <button type="button" class="btn btn-sm" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? '加载中…' : '加载更多'}</button>}</div>}<footer><span>Small Web · 原文摘录，不生成 AI 摘要</span><span>持续入库，随时阅读</span></footer></>}
         </main>
       </div>}
   </div>;

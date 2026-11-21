@@ -61,7 +61,7 @@ def collect(config: dict, client: httpx.Client) -> list[dict]:
         response = client.get(url, follow_redirects=True)
         response.raise_for_status()
         feed = feedparser.parse(response.content)
-        for entry in feed.entries[: config["candidate_limit"]]:
+        for entry in feed.entries:
             link = entry.get("link", "")
             if urlparse(link).scheme not in ("http", "https"):
                 continue
@@ -84,6 +84,15 @@ def collect(config: dict, client: httpx.Client) -> list[dict]:
                 "category": "Small Web", "summary_kind": "excerpt",
             }
     return list(articles.values())
+
+
+def archive_articles(client: httpx.Client, api_url: str, sync_token: str, articles: list[dict]):
+    """Persist every collected entry independently of recommendation eligibility."""
+    for offset in range(0, len(articles), 100):
+        response = client.post(api_url.rstrip('/') + '/internal/ingest',
+                               headers={'Authorization': 'Bearer ' + sync_token},
+                               json={'articles': articles[offset:offset + 100]})
+        response.raise_for_status()
 
 
 class VectorCache:
@@ -288,6 +297,8 @@ def generate(config_path: Path, *, publish: bool = True) -> dict:
         if snapshot.get("settings"):
             config["topics"] = snapshot["settings"]["topics"]
         fresh = collect(config, client)
+        if publish:
+            archive_articles(client, api_url, sync_token, fresh)
         pool = {a["url"]: a for a in snapshot["articles"]}
         pool.update({a["url"]: a for a in fresh})
         cutoff = datetime.now(UTC) - timedelta(days=config["max_age_days"])

@@ -1,22 +1,28 @@
 # Small Web Reader
 
-A personal reading list for independent blogs: a static GitHub Pages frontend,
-daily GitHub Actions generation, and a Cloudflare Worker with D1 for private
-reading state and feedback. No local models and no AI-generated summaries.
+A personal article library for independent blogs: a static GitHub Pages frontend,
+hourly RSS collection, daily recommendations, and a Cloudflare Worker with D1
+for the archive, private reading state and feedback. No local models and no AI-generated summaries.
 
 Built on the Preact reading UI and concepts from
 [CondenseIt](https://github.com/wildlifechorus/condenseit) (MIT). See `LICENSE`.
 
 ## How it works
 
-1. Actions downloads Kagi Small Web RSS/Atom and merges recent candidates from D1.
+1. An hourly Actions job archives every entry returned by Kagi Small Web RSS/Atom,
+   without calling an embedding model. All collected articles remain available
+   for search, reading, saving and explicit feedback through the article library.
+   The source feed is a window of recent entries, not a complete historical dump.
+   The separate daily job merges recent candidates from D1 for ranking.
 2. SiliconFlow `BAAI/bge-m3` embeds articles and eight initial topic descriptions.
 3. Explicitly approved articles form multiple interest centers using spherical
    KMeans on API vectors (no local language model). Selection ranks against the
    nearest center, limits authors, removes similar articles and reserves a small
    exploration slot among eligible candidates.
 4. The daily list is published through an authenticated service endpoint.
-5. GitHub Pages fetches lists from the Worker after the reader logs in.
+5. GitHub Pages opens the full article library after login. Server-side search
+   covers all archived titles, sources and content; cursor pagination has no
+   recent-date cutoff. Daily selections remain a separate optional view.
 
 The default interests are cognitive science, spaced repetition, school education,
 computer science, open source, rational thinking, language learning and
@@ -25,7 +31,8 @@ initial defaults are in `cloud/preferences.json`.
 Similarity is relevance, not a quality guarantee; the initial thresholds are
 heuristics, not measured accuracy scores.
 
-The daily workflow runs at approximately 07:17 Asia/Shanghai. GitHub may delay
+The archive workflow runs hourly; manually run **Sync article archive** for an
+immediate collection. The daily workflow runs at approximately 07:17 Asia/Shanghai. GitHub may delay
 scheduled runs; **Actions > Generate daily reading list > Run workflow** is also
 available. Public repositories with no activity for 60 days can have schedules
 disabled by GitHub.
@@ -66,7 +73,8 @@ In repository settings:
 - Add the Actions secret `READER_SYNC_TOKEN` with the Worker's `SYNC_TOKEN`.
 - Add the Actions secret `SILICONFLOW_API_KEY` with your embedding API key.
 
-Run **Publish reader to GitHub Pages**, then **Generate daily reading list**.
+Run **Publish reader to GitHub Pages**, **Sync article archive**, then optionally
+**Generate daily reading list**.
 The frontend uses the Pages base path, so project repositories work without a
 custom domain. Data updates do not require rebuilding the frontend.
 
@@ -87,7 +95,8 @@ that day's digest rather than creating a duplicate.
 
 Changing a verdict replaces the previous one. The next daily run uses the current
 feedback. Clear feedback restores a neutral verdict; reading state is independent.
-Saved articles remain available even if they no longer appear in the daily list.
+All archived articles accept feedback, including older articles never selected
+for a daily list. Saved articles remain available outside daily selections.
 
 ## Reading interface
 
@@ -121,8 +130,8 @@ editing settings. Cloudflare exposes authenticated GET/POST /api/settings and th
 service snapshot carries saved interests to the generator. Display settings do
 not enter the vector cache or static Pages output.
 
-Apply all Worker migrations, including 0002_settings.sql, before deploying the
-settings-enabled Worker. Unsaved edits are kept in the form until saved or
+Apply all Worker migrations, including 0002_settings.sql and
+0003_article_archive.sql, before deploying the Worker. Unsaved edits are kept in the form until saved or
 explicitly discarded. Failed validation leaves the stored preferences unchanged.
 
 ## Learning from approved articles

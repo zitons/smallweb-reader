@@ -33,6 +33,12 @@ export interface Feed {
   digest: Digest | null;
   history: { id: number; run_key: string; generated_at: string }[];
 }
+export interface ArticlePage {
+  items: Article[];
+  total: number;
+  counts: { all: number; saved: number };
+  next_cursor: string | null;
+}
 const base = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const storageKey = `smallweb-session:${base}`;
 

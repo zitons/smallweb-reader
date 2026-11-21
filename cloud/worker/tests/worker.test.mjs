@@ -13,7 +13,7 @@ test('reader authentication, publication, feedback and sync persist in real D1',
   });
   try {
     const db = await mf.getD1Database('DB');
-    for (const migration of ['0001_reader.sql', '0002_settings.sql']) {
+    for (const migration of ['0001_reader.sql', '0002_settings.sql', '0003_article_archive.sql']) {
       const sql = await readFile('migrations/' + migration, 'utf8');
       for (const statement of sql.split(';').map(s => s.trim()).filter(Boolean)) await db.prepare(statement).run();
     }
@@ -23,6 +23,7 @@ test('reader authentication, publication, feedback and sync persist in real D1',
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     assert.equal((await call('/api/feed')).status, 401);
+    assert.equal((await call('/api/articles')).status, 401);
     assert.equal((await call('/api/settings')).status, 401);
     assert.equal((await call('/api/settings', { body: { theme: 'light' } })).status, 401);
     assert.equal((await call('/api/auth/login', { origin: 'https://evil.test', body: { password: 'test-password' } })).status, 403);
@@ -33,6 +34,8 @@ test('reader authentication, publication, feedback and sync persist in real D1',
     assert.equal((await call('/internal/snapshot', { token })).status, 401);
     assert.equal((await call('/api/feed', { token: 'test-sync-secret' })).status, 401);
     assert.equal((await call('/api/settings', { token: 'test-sync-secret' })).status, 401);
+    assert.equal((await call('/api/articles', { token: 'test-sync-secret' })).status, 401);
+    assert.equal((await call('/internal/ingest', { token, body: { articles: [] } })).status, 401);
     const defaults = await (await call('/api/settings', { token })).json();
     assert.equal(defaults.configured, false);
     assert.equal(defaults.settings.theme, 'dark');
@@ -56,6 +59,24 @@ test('reader authentication, publication, feedback and sync persist in real D1',
     const payload = { articles: [article], digest };
     assert.equal((await call('/internal/publish', { token: 'test-sync-secret', body: payload })).status, 200);
     assert.equal((await call('/internal/publish', { token: 'test-sync-secret', body: payload })).status, 200);
+    const archiveOnly = Array.from({ length: 65 }, (_, i) => ({ ...article, url: `https://archive.test/${String(i).padStart(3, '0')}`, title: `Archive-only ${i}`, published_at: i === 64 ? '2020-01-01T00:00:00+00:00' : article.published_at }));
+    assert.equal((await call('/internal/ingest', { token: 'test-sync-secret', body: { articles: archiveOnly } })).status, 200);
+    assert.equal((await call('/internal/ingest', { token: 'test-sync-secret', body: { articles: archiveOnly } })).status, 200);
+    let cursor = null;
+    const archivedUrls = [];
+    do {
+      const page = await (await call('/api/articles?limit=10' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''), { token })).json();
+      assert.equal(page.total, 66);
+      assert.equal(page.counts.all, 66);
+      archivedUrls.push(...page.items.map(a => a.url));
+      cursor = page.next_cursor;
+    } while (cursor);
+    assert.equal(new Set(archivedUrls).size, 66, 'stable cursors must visit every article even when dates tie');
+    assert.equal(archivedUrls.length, 66);
+    const oldArticle = await (await call('/api/articles?q=Archive-only%2064', { token })).json();
+    assert.equal(oldArticle.total, 1, 'search must include old articles outside daily selections and recent pools');
+    assert.equal(oldArticle.items[0].url, archiveOnly[64].url);
+    for (const path of ['/api/articles?limit=101', '/api/articles?cursor=invalid', '/api/articles?scope=unknown']) assert.equal((await call(path, { token })).status, 422);
     let feed = await (await call('/api/feed', { token })).json();
     assert.equal(feed.history.length, 1, 'retry must not create a duplicate daily digest');
     const originalId = feed.digest.id;
@@ -85,6 +106,13 @@ test('reader authentication, publication, feedback and sync persist in real D1',
     assert.equal(feed.digest.items[0].feedback.is_read, 0);
     await feedback('unsave');
     assert.equal((await (await call('/api/library', { token })).json()).items.length, 0);
+    const archiveFeedback = action => call('/api/feedback', { token, body: { url: archiveOnly[64].url, action } });
+    assert.equal((await archiveFeedback('useful')).status, 200, 'an unselected old article can train interests');
+    assert.equal((await (await call('/api/articles?q=Archive-only%2064&unread=1', { token })).json()).total, 0);
+    await archiveFeedback('save');
+    const savedArchive = await (await call('/api/articles?scope=saved', { token })).json();
+    assert.equal(savedArchive.total, 1);
+    assert.equal(savedArchive.items[0].url, archiveOnly[64].url);
     assert.equal((await call('/api/feed', { token: token.slice(0, -2) + 'xx' })).status, 401);
     for (let i = 0; i < 11; i++) await call('/api/auth/login', { body: { password: 'wrong' } });
     assert.equal((await call('/api/auth/login', { body: { password: 'test-password' } })).status, 429);

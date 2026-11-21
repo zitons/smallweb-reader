@@ -59,6 +59,48 @@ def test_feed_excerpt_removes_markup_and_scripts():
     assert cloud.plain('<p>Hello &amp; world</p><script>bad()</script><p>Source</p>') == 'Hello & world Source'
 
 
+def test_collection_does_not_truncate_feed_to_recommendation_limit():
+    feed = '<rss version="2.0"><channel>' + ''.join(f'<item><title>Article {i}</title><link>https://blog.test/{i}</link><description>Full source excerpt {i}</description></item>' for i in range(5)) + '</channel></rss>'
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=feed))) as client:
+        entries = cloud.collect({'feeds': ['https://feed.test/rss'], 'candidate_limit': 1}, client)
+    assert len(entries) == 5
+
+
+def test_archive_batches_every_entry_without_calling_embeddings():
+    requests = []
+    def respond(request):
+        assert request.url.path == '/internal/ingest'
+        assert request.headers['Authorization'] == 'Bearer sync'
+        requests.append(json.loads(request.content)['articles'])
+        return httpx.Response(200, json={'ok': True})
+    articles = [{'url': f'https://blog.test/{i}'} for i in range(215)]
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        cloud.archive_articles(client, 'https://reader.test', 'sync', articles)
+    assert [len(batch) for batch in requests] == [100, 100, 15]
+    assert [a for batch in requests for a in batch] == articles
+
+
+def test_old_entries_are_archived_even_when_no_digest_can_be_generated(tmp_path, monkeypatch):
+    old = {'url': 'https://old.test/a', 'title': 'Old', 'content': 'Source', 'source': 'old.test', 'published_at': '2020-01-01T00:00:00+00:00'}
+    writes = []
+    def respond(request):
+        if request.url.path == '/internal/snapshot':
+            return httpx.Response(200, json={'articles': [], 'feedback': []})
+        assert request.url.path == '/internal/ingest', 'archive ingestion must not require embeddings or a digest'
+        writes.append(json.loads(request.content)['articles'])
+        return httpx.Response(200, json={'ok': True})
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(cloud.httpx, 'Client', lambda **kwargs: client)
+    monkeypatch.setattr(cloud, 'collect', lambda config, client: [old])
+    for key in ('READER_API_URL', 'READER_SYNC_TOKEN', 'SILICONFLOW_API_KEY'):
+        monkeypatch.setenv(key, 'https://reader.test' if key == 'READER_API_URL' else 'test')
+    path = tmp_path / 'config.yaml'
+    path.write_text(json.dumps({'max_age_days': 30, 'pool_limit': 200}))
+    with pytest.raises(RuntimeError, match='No recent articles'):
+        cloud.generate(path)
+    assert writes == [[old]]
+
+
 def test_explicit_samples_replace_descriptions_and_preserve_multiple_interests():
     config = {"topics": [{"name": "Written topic"}], "min_similarity": .42,
               "daily_limit": 10, "max_per_author": 2, "max_per_topic": 3,
