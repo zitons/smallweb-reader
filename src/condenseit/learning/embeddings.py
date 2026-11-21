@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import struct
+from threading import Lock
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,9 @@ if TYPE_CHECKING:
     from condenseit.store.database import ContentStore
 
 logger = logging.getLogger(__name__)
+# Dedup workers share a SQLite connection; serialize cache access while allowing
+# embedding requests to run concurrently outside the lock.
+_cache_lock = Lock()
 
 
 class EmbeddingProvider(ABC):
@@ -223,7 +227,8 @@ def get_or_compute_embedding(
     Cache key: (url, model, content_hash).  Stale entries (content changed)
     are transparently replaced.
     """
-    blob = store.get_embedding(url, provider.model_name, content_hash)
+    with _cache_lock:
+        blob = store.get_embedding(url, provider.model_name, content_hash)
     if blob is not None:
         return blob_to_vec(blob)
 
@@ -232,7 +237,8 @@ def get_or_compute_embedding(
         return None
 
     arr = np.array(vec, dtype=np.float32)
-    store.save_embedding(url, provider.model_name, content_hash, vec_to_blob(arr))
+    with _cache_lock:
+        store.save_embedding(url, provider.model_name, content_hash, vec_to_blob(arr))
     return arr
 
 
